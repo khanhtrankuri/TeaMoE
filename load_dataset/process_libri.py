@@ -21,8 +21,8 @@ _ALL_SUBSETS = {
     "test-clean": _DL_URL + "test-clean.tar.gz",
     "test-other": _DL_URL + "test-other.tar.gz",
     "train-clean-100": _DL_URL + "train-clean-100.tar.gz",
-    "train-clean-360": _DL_URL + "train-clean-360.tar.gz",
-    "train-other-500": _DL_URL + "train-other-500.tar.gz",
+    # "train-clean-360": _DL_URL + "train-clean-360.tar.gz",
+    # "train-other-500": _DL_URL + "train-other-500.tar.gz",
 }
 
 DEFAULT_TRAIN_SUBSETS = ("train-clean-100",)

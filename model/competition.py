@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from flax import linen as nn
 from typing import Tuple, List
 from .config import ModelConfig
 

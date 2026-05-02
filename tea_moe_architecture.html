@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TeaMoE Architecture</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #00d4ff;
+            margin-bottom: 40px;
+        }
+        .architecture {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .block {
+            border: 2px solid #333;
+            border-radius: 10px;
+            padding: 20px;
+            background: #16213e;
+            position: relative;
+        }
+        .block-title {
+            font-weight: bold;
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #00d4ff;
+        }
+        .flow-arrow {
+            text-align: center;
+            font-size: 24px;
+            color: #00d4ff;
+            margin: 5px 0;
+        }
+        .sub-blocks {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .sub-block {
+            flex: 1;
+            min-width: 200px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 15px;
+            background: #0f3460;
+        }
+        .sub-block-title {
+            font-weight: bold;
+            color: #e94560;
+            margin-bottom: 10px;
+        }
+        .layer-stack {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            overflow-x: auto;
+            padding: 10px 0;
+        }
+        .layer {
+            min-width: 100px;
+            padding: 10px;
+            border: 1px solid #555;
+            border-radius: 5px;
+            text-align: center;
+            background: #1a1a2e;
+            font-size: 12px;
+        }
+        .moe-layer {
+            background: #2d132c;
+            border-color: #e94560;
+        }
+        .expert-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .expert-group {
+            border: 1px solid #e94560;
+            border-radius: 5px;
+            padding: 10px;
+            background: #2d132c;
+        }
+        .expert {
+            padding: 5px;
+            margin: 2px;
+            background: #533483;
+            border-radius: 3px;
+            font-size: 11px;
+            text-align: center;
+        }
+        .competition-box {
+            border: 2px dashed #f59e0b;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            background: #1a1a2e;
+        }
+        .distillation-box {
+            border: 2px dashed #10b981;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            background: #1a1a2e;
+        }
+        .info-text {
+            font-size: 13px;
+            color: #aaa;
+            line-height: 1.6;
+        }
+        .highlight {
+            color: #e94560;
+            font-weight: bold;
+        }
+        .highlight-blue {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+        .highlight-green {
+            color: #10b981;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍵 TeaMoE Architecture</h1>
+
+        <div class="architecture">
+            <!-- Input -->
+            <div class="block">
+                <div class="block-title">📥 Input</div>
+                <div class="sub-blocks">
+                    <div class="sub-block">
+                        <div class="sub-block-title">Audio Features</div>
+                        <div class="info-text">(batch, time, n_mels)<br>Mel-spectrogram input</div>
+                    </div>
+                    <div class="sub-block">
+                        <div class="sub-block-title">Targets</div>
+                        <div class="info-text">(batch, target_len)<br>Transcript tokens</div>
+                    </div>
+                    <div class="sub-block">
+                        <div class="sub-block-title">Phone Targets</div>
+                        <div class="info-text">(batch, target_len)<br>Phone tokens (CTC)</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-arrow">↓</div>
+
+            <!-- Gating Network -->
+            <div class="block">
+                <div class="block-title">🚪 Gating Network</div>
+                <div class="info-text">
+                    Input: <span class="highlight-blue">(batch, time, model_dim)</span><br>
+                    Output: <span class="highlight">group_probs (batch, time, 8)</span> + <span class="highlight">group_ids (batch, time)</span><br>
+                    → Chọn 1 trong 8 Expert Groups cho mỗi frame
+                </div>
+            </div>
+
+            <div class="flow-arrow">↓</div>
+
+            <!-- MoE-Conformer Encoder -->
+            <div class="block">
+                <div class="block-title">🏗️ MoE-Conformer Encoder (24 Layers)</div>
+
+                <div class="layer-stack">
+                    <div class="layer">Layer 1<br>(Dense)</div>
+                    <div class="layer">Layer 2<br>(Dense)</div>
+                    <div class="layer">Layer 3<br>(Dense)</div>
+                    <div class="layer">Layer 4<br>(Dense)</div>
+                    <div class="layer">Layer 5<br>(Dense)</div>
+                    <div style="font-size: 20px; color: #e94560;">⬇</div>
+                    <div class="layer moe-layer">Layer 6<br>(MoE)</div>
+                    <div class="layer moe-layer">Layer 7<br>(MoE)</div>
+                    <div class="layer moe-layer">...</div>
+                    <div class="layer moe-layer">Layer 18<br>(MoE)</div>
+                    <div style="font-size: 20px; color: #00d4ff;">⬇</div>
+                    <div class="layer">Layer 19<br>(Dense)</div>
+                    <div class="layer">Layer 20<br>(Dense)</div>
+                    <div class="layer">Layer 21<br>(Dense)</div>
+                    <div class="layer">Layer 22<br>(Dense)</div>
+                    <div class="layer">Layer 23<br>(Dense)</div>
+                    <div class="layer">Layer 24<br>(Dense)</div>
+                </div>
+
+                <div class="info-text" style="margin-top: 15px;">
+                    <span class="highlight">Pre-layers (1-5):</span> Standard Conformer (Conv → Self-Attn → FFN)<br>
+                    <span class="highlight">MoE-layers (6-18):</span> Conformer với MoE-FFN (Expert Groups)<br>
+                    <span class="highlight-blue">Post-layers (19-24):</span> Standard Conformer
+                </div>
+
+                <!-- Expert Groups Detail -->
+                <div class="expert-grid">
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 0</div>
+                        <div class="expert">Expert 0</div>
+                        <div class="expert">Expert 1</div>
+                        <div class="expert">Expert 2</div>
+                        <div class="expert">Expert 3</div>
+                        <div class="expert">Expert 4</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 1</div>
+                        <div class="expert">Expert 5</div>
+                        <div class="expert">Expert 6</div>
+                        <div class="expert">Expert 7</div>
+                        <div class="expert">Expert 8</div>
+                        <div class="expert">Expert 9</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 2</div>
+                        <div class="expert">Expert 10</div>
+                        <div class="expert">Expert 11</div>
+                        <div class="expert">Expert 12</div>
+                        <div class="expert">Expert 13</div>
+                        <div class="expert">Expert 14</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 3</div>
+                        <div class="expert">Expert 15</div>
+                        <div class="expert">Expert 16</div>
+                        <div class="expert">Expert 17</div>
+                        <div class="expert">Expert 18</div>
+                        <div class="expert">Expert 19</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 4</div>
+                        <div class="expert">Expert 20</div>
+                        <div class="expert">Expert 21</div>
+                        <div class="expert">Expert 22</div>
+                        <div class="expert">Expert 23</div>
+                        <div class="expert">Expert 24</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 5</div>
+                        <div class="expert">Expert 25</div>
+                        <div class="expert">Expert 26</div>
+                        <div class="expert">Expert 27</div>
+                        <div class="expert">Expert 28</div>
+                        <div class="expert">Expert 29</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 6</div>
+                        <div class="expert">Expert 30</div>
+                        <div class="expert">Expert 31</div>
+                        <div class="expert">Expert 32</div>
+                        <div class="expert">Expert 33</div>
+                        <div class="expert">Expert 34</div>
+                    </div>
+                    <div class="expert-group">
+                        <div style="text-align: center; font-weight: bold; color: #e94560;">Group 7</div>
+                        <div class="expert">Expert 35</div>
+                        <div class="expert">Expert 36</div>
+                        <div class="expert">Expert 37</div>
+                        <div class="expert">Expert 38</div>
+                        <div class="expert">Expert 39</div>
+                    </div>
+                </div>
+
+                <!-- Competition & Distillation -->
+                <div class="competition-box">
+                    <div style="font-weight: bold; color: #f59e0b; margin-bottom: 10px;">🏆 Natural Niches Competition</div>
+                    <div class="info-text">
+                        • Thuật toán: Chọn parent theo fitness + MATCHMAKER<br>
+                        • Tạo offspring: Slerp interpolation giữa 2 parents<br>
+                        • Thay thế expert yếu nhất trong mỗi group<br>
+                        • Alpha normalization cho fitness scoring
+                    </div>
+                </div>
+
+                <div class="distillation-box">
+                    <div style="font-weight: bold; color: #10b981; margin-bottom: 10px;">🎓 Expert Distillation</div>
+                    <div class="info-text">
+                        • <span class="highlight-green">Teacher:</span> Top 1-2 experts (fittest)<br>
+                        • <span class="highlight-green">Student:</span> Top 3-5 experts<br>
+                        • Loss: KL Divergence với temperature scaling<br>
+                        • Chỉ áp dụng cho 10% batch ngẫu nhiên
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-arrow">↓</div>
+
+            <!-- RNN-T Decoder -->
+            <div class="block">
+                <div class="block-title">🎯 RNN-T Decoder</div>
+                <div class="sub-blocks">
+                    <div class="sub-block">
+                        <div class="sub-block-title">Prediction Network</div>
+                        <div class="info-text">
+                            • 2-layer LSTM<br>
+                            • Hidden dim: 1024<br>
+                            • Input: target tokens<br>
+                            • Output: (batch, label_len, hidden)
+                        </div>
+                    </div>
+                    <div class="sub-block">
+                        <div class="sub-block-title">Joint Network</div>
+                        <div class="info-text">
+                            • Combine Encoder + Prediction<br>
+                            • Add operation (broadcast)<br>
+                            • ReLU activation<br>
+                            • Output: (batch, time, label_len, vocab+1)
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flow-arrow">↓</div>
+
+            <!-- Output & Loss -->
+            <div class="block">
+                <div class="block-title">📤 Output & Loss</div>
+                <div class="sub-blocks">
+                    <div class="sub-block">
+                        <div class="sub-block-title">RNN-T Logits</div>
+                        <div class="info-text">(batch, time, target_len, vocab_size+1)</div>
+                    </div>
+                    <div class="sub-block">
+                        <div class="sub-block-title">Phone Logits (CTC)</div>
+                        <div class="info-text">(batch, time, num_phones)<br>Tối ưu PER</div>
+                    </div>
+                    <div class="sub-block">
+                        <div class="sub-block-title">Combined Loss</div>
+                        <div class="info-text">
+                            • RNN-T Loss<br>
+                            • Load Balance Weight<br>
+                            • Z-Loss<br>
+                            • Distillation Loss<br>
+                            • CTC Phone Loss
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 40px; padding: 20px; background: #0f3460; border-radius: 10px;">
+            <h3 style="color: #00d4ff;">📊 Thông số chính</h3>
+            <div class="info-text">
+                • <span class="highlight">Tổng số Experts:</span> 40 (8 groups × 5 experts)<br>
+                • <span class="highlight">Model Dimension:</span> 1024<br>
+                • <span class="highlight">Số layers:</span> 24 (5 Dense + 13 MoE + 6 Dense)<br>
+                • <span class="highlight">Attention Heads:</span> 16<br>
+                • <span class="highlight">Decoder Hidden:</span> 1024 (2-layer LSTM)<br>
+                • <span class="highlight">Distillation Weight:</span> 0.1<br>
+                • <span class="highlight">Competition:</span> Natural Niches với MATCHMAKER
+            </div>
+        </div>
+    </div>
+</body>
+</html>

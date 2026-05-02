@@ -5,7 +5,7 @@ Metrics: WER, PER, Gini coefficient, Cosine distance between experts
 import os
 import json
 import argparse
-from typing import Tuple, Dict, List
+from typing import List, Dict, Tuple
 from pathlib import Path
 
 import jax
@@ -88,13 +88,13 @@ def compute_cosine_distance_experts(expert_weights: List[jnp.ndarray]) -> float:
 # ==================== Decoding ====================
 
 def greedy_decode_rnnt(logits: jnp.ndarray, blank_id: int = 0) -> List[int]:
-    """Simple greedy decoding for RNN-T output"""
-    preds = jnp.argmax(logits, axis=-1)
+    """Greedy decoding for RNN-T output"""
+    time_steps, label_len = logits.shape[0], logits.shape[1]
     decoded = []
     prev = -1
-    for t in range(preds.shape[0]):
-        for l in range(preds.shape[1]):
-            token = int(preds[t, l])
+    for t in range(time_steps):
+        for l in range(label_len):
+            token = int(jnp.argmax(logits[t, l]))
             if token != blank_id and token != prev:
                 decoded.append(token)
                 prev = token
@@ -153,7 +153,8 @@ def create_train_state(
     rng, init_rng = random.split(rng)
     dummy_audio = jnp.ones((1, 100, config.n_mels))
     dummy_targets = jnp.ones((1, 10), dtype=jnp.int32)
-    variables = model.init(init_rng, dummy_audio, dummy_targets, deterministic=False)
+    dummy_phone_targets = jnp.ones((1, 100), dtype=jnp.int32)
+    variables = model.init(init_rng, dummy_audio, dummy_targets, dummy_phone_targets, deterministic=False)
     params = variables['params']
 
     schedule = optax.warmup_cosine_decay_schedule(
@@ -181,15 +182,15 @@ def create_train_state(
 # ==================== Training Step ====================
 
 @jax.jit
-def train_step(state: TrainState, batch) -> Tuple[TrainState, Dict]:
+def train_step(state: TrainState, batch, rng_key):
     """Single training step"""
     audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
 
-    rng, dropout_rng = random.split(state.rng)
+    rng_key, dropout_rng = random.split(rng_key)
 
     def loss_fn(params):
         rng1, rng2 = random.split(dropout_rng)
-        outputs, aux_outputs = state.apply_fn(
+        outputs = state.apply_fn(
             {'params': params},
             audio_features,
             targets,
@@ -197,14 +198,22 @@ def train_step(state: TrainState, batch) -> Tuple[TrainState, Dict]:
             deterministic=False,
             rngs={'dropout': rng1}
         )
-        rnnt_logits = outputs[0] if isinstance(outputs, tuple) else outputs
+        # outputs is a tuple: (model_outputs, aux_outputs)
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            model_out, aux_outputs = outputs
+        else:
+            model_out = outputs
+            aux_outputs = {}
+
+        rnnt_logits = model_out[0] if isinstance(model_out, tuple) else model_out
         group_probs = aux_outputs.get('group_probs')
         group_ids = aux_outputs.get('group_ids')
         phone_logits = aux_outputs.get('phone_logits')
 
         group_logits = jnp.log(group_probs + 1e-8) if group_probs is not None else None
 
-        distillation_loss = 0.0  # Placeholder
+        # Distillation loss placeholder
+        distillation_loss = 0.0
 
         total_loss, loss_dict = state.loss_fn.total_loss(
             rnnt_logits=rnnt_logits,
@@ -219,23 +228,55 @@ def train_step(state: TrainState, batch) -> Tuple[TrainState, Dict]:
             phone_targets=phone_targets,
             phone_lengths=phone_lengths
         )
-        return total_loss, loss_dict
+        return total_loss, (loss_dict, group_ids)
 
     grad_fn = jax.grad(loss_fn, has_aux=True)
-    grads, (loss, loss_dict) = grad_fn(state.params)
+    grads, (loss_dict, group_ids) = grad_fn(state.params)
 
     state = state.apply_gradients(grads=grads)
+
+    # Update expert usage statistics
+    if group_ids is not None:
+        group_ids_flat = group_ids.reshape(-1)
+        usage = np.bincount(np.array(group_ids_flat), minlength=state.competition.num_groups)
+        state = state.replace(
+            expert_usage=state.expert_usage + usage
+        )
+
     state = state.replace(
-        rng=rng,
         step_count=state.step_count + 1
     )
 
-    return state, {'loss': float(loss), 'loss_dict': loss_dict}
+    loss_val = loss_dict['total'] if isinstance(loss_dict, dict) and 'total' in loss_dict else loss_dict
+    return state, {'loss': float(loss_val), 'loss_dict': loss_dict}, rng_key
+
+
+# ==================== Competition Step ====================
+
+def run_competition(state: TrainState, rng_key):
+    """Run natural niches competition to evolve experts"""
+    rng_key, subkey = random.split(rng_key)
+
+    # Simplified: generate random expert weights for demonstration
+    expert_weights = jnp.ones((state.competition.num_groups, state.competition.experts_per_group, 1024))
+
+    # Generate random fitness scores for demonstration
+    num_datapoints = 100
+    scores = jax.random.normal(subkey, (state.competition.num_experts, num_datapoints))
+
+    # Run competition for each group
+    for group_id in range(state.competition.num_groups):
+        parent_1_idx, parent_2_idx = state.competition.sample_parents(
+            expert_weights.reshape(-1, 1024), scores, subkey, group_id
+        )
+        # In practice, would update actual params using competition.run_competition_step
+
+    return state, rng_key
 
 
 # ==================== Evaluation ====================
 
-def evaluate(state: TrainState, eval_batches: List[Tuple]) -> Dict:
+def evaluate(state: TrainState, eval_batches):
     """Evaluate model on validation set"""
     all_preds = []
     all_targets = []
@@ -246,7 +287,7 @@ def evaluate(state: TrainState, eval_batches: List[Tuple]) -> Dict:
         audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
 
         rng = random.PRNGKey(0)
-        outputs, aux_outputs = state.apply_fn(
+        outputs = state.apply_fn(
             {'params': state.params},
             audio_features,
             targets,
@@ -254,7 +295,14 @@ def evaluate(state: TrainState, eval_batches: List[Tuple]) -> Dict:
             deterministic=True,
             rngs={'dropout': rng}
         )
-        rnnt_logits = outputs[0] if isinstance(outputs, tuple) else outputs
+
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            model_out, aux_outputs = outputs
+        else:
+            model_out = outputs
+            aux_outputs = {}
+
+        rnnt_logits = model_out[0] if isinstance(model_out, tuple) else model_out
         phone_logits = aux_outputs.get('phone_logits')
 
         for i in range(len(audio_features)):
@@ -319,11 +367,12 @@ def main():
 
         for _ in pbar:
             batch = load_data_batch(args.batch_size, split="train")
-            state, metrics = train_step(state, batch)
+            state, metrics, rng = train_step(state, batch, rng)
             epoch_loss += metrics['loss']
 
             if state.step_count % config.competition_freq_steps == 0 and state.step_count > 0:
                 print(f"\nRunning competition at step {state.step_count}...")
+                state, rng = run_competition(state, rng)
 
             pbar.set_postfix({'loss': metrics['loss']})
 

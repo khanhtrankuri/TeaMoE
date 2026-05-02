@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile train.py)",
+      "Bash(python -m py_compile model/config.py)",
+      "Bash(python -m py_compile model/tea_moe.py)",
+      "Bash(python -m py_compile model/moe_conformer.py)",
+      "Bash(python -m py_compile model/rnnt_decoder.py)",
+      "Bash(python *)"
+    ]
+  }
+}

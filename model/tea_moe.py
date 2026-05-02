@@ -25,7 +25,7 @@ class TeaMoEModel(nn.Module):
         self.encoder = MoEConformerEncoder(config=self.config)
         self.decoder = RNNTDecoder(config=self.config)
         # Head phụ cho CTC phone recognition (tối ưu PER)
-        self.phone_head = nn.Dense(256)  # 256 là số lượng phone classes (cần định nghĩa)
+        self.phone_head = nn.Dense(config.num_phones) if hasattr(config, 'num_phones') else nn.Dense(256)
         self.loss_fn = CombinedLoss(
             load_balance_weight=self.config.load_balance_weight,
             z_loss_weight=self.config.z_loss_weight,

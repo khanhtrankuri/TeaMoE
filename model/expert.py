@@ -21,16 +21,16 @@ class ExpertGroup(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        for i in range(config.num_experts):
+        for i in range(config['num_experts']):
             setattr(self, f"expert_{i}", Expert(
-                expert_dim=config.expert_dim,
-                ff_multiplier=config.ff_multiplier,
-                dropout=config.dropout,
+                expert_dim=config['expert_dim'],
+                ff_multiplier=config['ff_multiplier'],
+                dropout=config['dropout'],
             ))
 
     def forward(self, x, deterministic=True):
         outputs = []
-        for i in range(self.config.num_experts):
+        for i in range(self.config['num_experts']):
             expert = getattr(self, f"expert_{i}")
             outputs.append(expert(x, deterministic=deterministic))
         return torch.stack(outputs, dim=1)

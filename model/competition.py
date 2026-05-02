@@ -8,11 +8,11 @@ class NaturalNichesCompetition:
 
     def __init__(self, config):
         self.config = config
-        self.alpha = config.alpha
-        self.use_matchmaker = config.use_matchmaker
-        self.num_experts = config.total_experts  # 40
-        self.num_groups = config.num_groups  # 8
-        self.experts_per_group = config.experts_per_group  # 5
+        self.alpha = config['alpha']
+        self.use_matchmaker = config['use_matchmaker']
+        self.num_experts = config['total_experts']
+        self.num_groups = config['num_groups']
+        self.experts_per_group = config['experts_per_group']
 
     def sample_parents(
         self,

@@ -1,0 +1,116 @@
+# Default config for high-VRAM GPUs (e.g. A100, RTX 3090/4090 24GB)
+model:
+  num_layers: 24
+  moe_start_layer: 6
+  moe_end_layer: 18
+  model_dim: 1024
+  num_heads: 16
+  conv_kernel_size: 31
+  ff_multiplier: 4
+
+  num_groups: 8
+  experts_per_group: 5
+  total_experts: 40
+  top_k_groups: 1
+  top_k_inference: 2
+
+  group_configs:
+    - group_id: 0
+      group_name: "vowels"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "vowels"
+    - group_id: 1
+      group_name: "plosives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "plosives"
+    - group_id: 2
+      group_name: "fricatives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "fricatives"
+    - group_id: 3
+      group_name: "nasals"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "nasals"
+    - group_id: 4
+      group_name: "male_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "male"
+    - group_id: 5
+      group_name: "female_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "female"
+    - group_id: 6
+      group_name: "clean_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "clean"
+    - group_id: 7
+      group_name: "other_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "other"
+
+  vocab_size: 5000
+  decoder_hidden: 1024
+  decoder_layers: 2
+  blank_id: 0
+
+  competition_freq_steps: 1000
+  distillation_weight: 0.1
+  load_balance_weight: 0.01
+  z_loss_weight: 0.001
+  ctc_phone_weight: 0.3
+
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+
+  alpha: 0.5
+  use_matchmaker: true
+
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+  max_duration: 30.0
+  num_workers: 4
+
+training:
+  num_epochs: 100
+  batch_size: 16
+  learning_rate: 0.001
+  warmup_steps: 50000
+  total_steps: 500000
+  output_dir: "checkpoints"
+  resume: false
+  wandb_project: "TeaMoE"
+  wandb_entity: null
+  device: null  # auto-detect

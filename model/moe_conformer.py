@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from typing import List
-from .config import ModelConfig
 from .expert import ExpertGroup
 
 
@@ -55,13 +54,13 @@ class MoEConformerLayer(nn.Module):
         super().__init__()
         self.config = config
         self.expert_groups = nn.ModuleList(expert_groups)
-        self.conv_norm = nn.LayerNorm(config.model_dim)
-        self.conv = nn.Conv1d(config.model_dim, config.model_dim,
-                               kernel_size=config.conv_kernel_size, padding=config.conv_kernel_size//2)
+        self.conv_norm = nn.LayerNorm(config['model_dim'])
+        self.conv = nn.Conv1d(config['model_dim'], config['model_dim'],
+                               kernel_size=config['conv_kernel_size'], padding=config['conv_kernel_size']//2)
         self.conv_gelu = nn.GELU()
         self.conv_dropout = nn.Dropout(0.1)
-        self.attn_norm = nn.LayerNorm(config.model_dim)
-        self.self_attn = nn.MultiheadAttention(config.model_dim, config.num_heads, dropout=0.1, batch_first=True)
+        self.attn_norm = nn.LayerNorm(config['model_dim'])
+        self.self_attn = nn.MultiheadAttention(config['model_dim'], config['num_heads'], dropout=0.1, batch_first=True)
         self.attn_dropout = nn.Dropout(0.1)
         self.moe_dropout = nn.Dropout(0.1)
 
@@ -112,29 +111,29 @@ class MoEConformerEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.expert_groups = nn.ModuleList([
-            ExpertGroup(group_cfg) for group_cfg in config.group_configs
+            ExpertGroup(group_cfg) for group_cfg in config['group_configs']
         ])
         self.pre_layers = nn.ModuleList([
             ConformerLayer(
-                model_dim=config.model_dim,
-                num_heads=config.num_heads,
-                ff_multiplier=config.ff_multiplier,
-                conv_kernel_size=config.conv_kernel_size,
+                model_dim=config['model_dim'],
+                num_heads=config['num_heads'],
+                ff_multiplier=config['ff_multiplier'],
+                conv_kernel_size=config['conv_kernel_size'],
             )
-            for _ in range(config.moe_start_layer)
+            for _ in range(config['moe_start_layer'])
         ])
         self.moe_layers = nn.ModuleList([
             MoEConformerLayer(config=config, expert_groups=self.expert_groups)
-            for _ in range(config.moe_start_layer, config.moe_end_layer)
+            for _ in range(config['moe_start_layer'], config['moe_end_layer'])
         ])
         self.post_layers = nn.ModuleList([
             ConformerLayer(
-                model_dim=config.model_dim,
-                num_heads=config.num_heads,
-                ff_multiplier=config.ff_multiplier,
-                conv_kernel_size=config.conv_kernel_size,
+                model_dim=config['model_dim'],
+                num_heads=config['num_heads'],
+                ff_multiplier=config['ff_multiplier'],
+                conv_kernel_size=config['conv_kernel_size'],
             )
-            for _ in range(config.moe_end_layer, config.num_layers)
+            for _ in range(config['moe_end_layer'], config['num_layers'])
         ])
 
     def forward(self, x, group_ids, deterministic=True):

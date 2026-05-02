@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
-from .config import ModelConfig
 
 
 class PredictionNetwork(nn.Module):
@@ -49,14 +48,14 @@ class RNNTDecoder(nn.Module):
         super().__init__()
         self.config = config
         self.pred_net = PredictionNetwork(
-            hidden_dim=config.decoder_hidden,
-            num_layers=config.decoder_layers,
-            vocab_size=config.vocab_size,
+            hidden_dim=config['decoder_hidden'],
+            num_layers=config['decoder_layers'],
+            vocab_size=config['vocab_size'],
             dropout=0.1,
         )
         self.joint_net = JointNetwork(
-            joint_dim=config.decoder_hidden,
-            vocab_size=config.vocab_size,
+            joint_dim=config['decoder_hidden'],
+            vocab_size=config['vocab_size'],
         )
 
     def forward(self, encoder_out, targets, deterministic=True):

@@ -1,154 +1,205 @@
 # TeaMoE: MoE-Conformer + RNN-T with Natural Niches Competition
 
-## Giới thiệu
+## Gioi thieu
 
-TeaMoE là một mô hình Automatic Speech Recognition (ASR) kết hợp kiến trúc **MoE-Conformer** và **RNN-T (Recurrent Neural Network Transducer)**, tích hợp cơ chế **Natural Niches Competition** để huấn luyện các expert chuyên biệt.
+TeaMoE la mot mo hinh Automatic Speech Recognition (ASR) ket hop kien truc **MoE-Conformer** va **RNN-T (Recurrent Neural Network Transducer)**, tich hop co che **Natural Niches Competition** de huan luyen cac expert chuyen biet.
 
-### Đặc điểm chính
+### Dac diem chinh
 
-- **MoE-Conformer Encoder**: 24 lớp Conformer, trong đó các lớp 6-18 sử dụng Mixture of Experts (MoE) với 8 nhóm expert, mỗi nhóm có 5 expert chuyên biệt
-- **RNN-T Decoder**: Sử dụng Prediction Network (LSTM) và Joint Network để decode trực tiếp từ audio sang văn bản
-- **Natural Niches Competition**: Cơ chế cạnh tranh tiến hóa giữa các expert trong cùng nhóm, sử dụng thuật toán selection dựa trên fitness score
-- **Expert Distillation**: Chuyển giao kiến thức từ top experts (top 1, 2) sang các experts yếu hơn (3, 4, 5) trong cùng nhóm
-- **Multi-task Learning**: Kết hợp RNN-T loss, Load Balance loss, Z-loss, Distillation loss và CTC Phone loss để tối ưu cả WER và PER
-- **Specialized Experts**: 8 nhóm expert chuyên biệt cho các loại âm thanh khác nhau (vowels, plosives, fricatives, nasals, male/female speakers, clean/other audio)
+- **MoE-Conformer Encoder**: 24 lop Conformer, trong do cac lop 6-18 su dung Mixture of Experts (MoE) voi 8 nhom expert, moi nhom co 5 expert chuyen biet
+- **RNN-T Decoder**: Su dung Prediction Network (LSTM) va Joint Network de decode truc tiep tu audio sang van ban
+- **Natural Niches Competition**: Co che canh tranh tien hoa giua cac expert trong cung nhom, su dung thuat toan selection dua tren fitness score
+- **Expert Distillation**: Chuyen giao kien thuc tu top experts (top 1, 2) sang cac experts yeu hon (3, 4, 5) trong cung nhom
+- **Multi-task Learning**: Ket hop RNN-T loss, Load Balance loss, Z-loss, Distillation loss va CTC Phone loss de toi uu ca WER va PER
+- **Specialized Experts**: 8 nhom expert chuyen biet cho cac loai am thanh khac nhau (vowels, plosives, fricatives, nasals, male/female speakers, clean/other audio)
 
 ### Metrics
 
-- **WER** (Word Error Rate): Đánh giá độ chính xác nhận dạng từ
-- **PER** (Phone Error Rate): Đánh giá độ chính xác nhận dạng âm vị
-- **Gini Coefficient**: Đo lường độ cân bằng tải giữa các experts
-- **Cosine Distance**: Đo lường sự đa dạng giữa các experts
+- **WER** (Word Error Rate): Danh gia do chinh xac nhan dang tu
+- **PER** (Phone Error Rate): Danh gia do chinh xac nhan dang am vi
+- **Gini Coefficient**: Do luong do can bang tai giua cac experts
+- **Cosine Distance**: Do luong su da dang giua cac experts
 
-## Cài đặt môi trường
+## Cai dat moi truong
 
-### Yêu cầu hệ thống
+### Yeu cau he thong
 
 - Python 3.8+
-- JAX (với CUDA support để train trên GPU)
-- Flax
-- Optax
+- PyTorch 2.0+ (voi CUDA support de train tren GPU)
+- torchaudio
+- librosa
+- PyYAML
 - NumPy
 - tqdm
+- wandb (tuy chon, de theo doi train)
 
-### Các bước cài đặt
+### Cac buoc cai dat
 
 ```bash
-# Tạo virtual environment (khuyên dùng)
+# Tao virtual environment (khuyen dung)
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# hoặc
-venv\Scripts\activate  # Windows
+# Linux/Mac:
+source venv/bin/activate
+# Windows:
+venv\Scripts\activate
 
-# Cài đặt các thư viện cần thiết
-pip install jax jaxlib  # CPU version
-# Hoặc cho GPU:
-pip install jax jaxlib[cuda] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# Cai dat cac thu vien can thiet
+pip install torch torchaudio librosa pyyaml numpy tqdm wandb
 
-# Cài đặt Flax và các thư viện khác
-pip install flax optax numpy tqdm argparse
-
-# Clone repository (nếu chưa có)
+# Clone repository (neu chua co)
 git clone <repository-url>
 cd TeaMoE
 ```
 
-### Cấu trúc thư mục
+### Cau truc thu muc
 
 ```
 TeaMoE/
+├── config/
+│   ├── default.yaml        # Cau hinh mac dinh (24GB+ VRAM)
+│   └── 8gb.yaml           # Cau hinh cho 8GB VRAM
 ├── model/
 │   ├── __init__.py
-│   ├── config.py           # Cấu hình mô hình
-│   ├── tea_moe.py          # Kiến trúc tổng thể
+│   ├── tea_moe.py          # Kien truc tong the
 │   ├── moe_conformer.py    # MoE-Conformer Encoder
 │   ├── rnnt_decoder.py     # RNN-T Decoder
 │   ├── gating.py           # Gating Network
-│   ├── expert.py           # Expert và ExpertGroup
+│   ├── expert.py           # Expert va ExpertGroup
 │   ├── competition.py      # Natural Niches Competition
 │   ├── distillation.py     # Expert Distillation
 │   └── losses.py          # Combined Loss
-├── train.py                # Script huấn luyện chính
-├── config.json             # File cấu hình (tùy chọn)
+├── datasets/
+│   └── processed_data_librispeech/  # Du lieu da xu ly
+│       ├── manifests/       # File manifest (train.jsonl, validation.jsonl, test.jsonl)
+│       └── audio/          # File audio WAV
+├── load_dataset/
+│   ├── process_libri.py    # Script tai va xu ly LibriSpeech
+│   └── text_utils.py
+├── train.py                # Script huan luyen chinh
 └── README.md
 ```
 
-## Hướng dẫn huấn luyện
+## Huong dan huan luyen
 
-### 1. Chuẩn bị dữ liệu
+### 1. Chuan bi du lieu
 
-Đặt dữ liệu LibriSpeech đã xử lý vào thư mục `processed_data_librispeech/`. Dữ liệu cần bao gồm:
-- Audio features (mel-spectrogram): shape `(batch, time, 80)`
-- Transcription targets: shape `(batch, target_len)` với vocab size 5000
-- Phone targets: shape `(batch, time)` với 256 phone classes
-
-**Lưu ý**: Hiện tại `train.py` đang sử dụng dummy data để test. Để sử dụng dữ liệu thật, cần cập nhật hàm `load_data_batch()` trong `train.py`.
-
-### 2. Cấu hình mô hình
-
-Bạn có thể tùy chỉnh cấu hình bằng cách tạo file JSON hoặc sửa trực tiếp trong `model/config.py`:
-
-```json
-{
-    "num_layers": 24,
-    "moe_start_layer": 6,
-    "moe_end_layer": 18,
-    "model_dim": 1024,
-    "num_heads": 16,
-    "num_groups": 8,
-    "experts_per_group": 5,
-    "total_experts": 40,
-    "vocab_size": 5000,
-    "decoder_hidden": 1024,
-    "decoder_layers": 2,
-    "competition_freq_steps": 1000,
-    "distillation_weight": 0.1,
-    "load_balance_weight": 0.01,
-    "z_loss_weight": 0.001,
-    "ctc_phone_weight": 0.3
-}
-```
-
-### 3. Chạy huấn luyện
+Tai va tien xu ly du lieu LibriSpeech:
 
 ```bash
-#Tải dữ liệu và Tiền xử lý dữ liệu
-python process_libri.py
+# Tai du lieu va chuyen doi FLAC -> WAV, tao manifest
+python load_dataset/process_libri.py
 
-# Huấn luyện với cấu hình mặc định
-python train.py
+# Du lieu se duoc luu tai:
+#   datasets/processed_data_librispeech/manifests/  (train.jsonl, validation.jsonl, test.jsonl)
+#   datasets/processed_data_librispeech/audio/       (file .wav)
+```
 
-# Hoặc chỉ định các tham số tùy chỉnh
+File manifest dinh dang JSONL, moi dong la mot JSON object chua:
+- `audio_filepath`: Duong dan den file WAV
+- `text`: Ban ghi van ban tuong ung
+- `speaker_id`: ID nguoi noi
+- `gender`: Gioi tinh (M/F)
+- `duration_seconds`: Do dai audio
+
+### 2. Cau hinh mo hinh
+
+Tuy chinh cau hinh thong qua file YAML trong thu muc `config/`:
+
+**`config/default.yaml`** — Cho GPU 24GB+ VRAM:
+```yaml
+model:
+  num_layers: 24
+  model_dim: 1024
+  num_heads: 16
+  num_groups: 8
+  experts_per_group: 5
+  total_experts: 40
+  # ...
+
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+
+training:
+  num_epochs: 100
+  batch_size: 16
+  learning_rate: 0.001
+```
+
+**`config/8gb.yaml`** — Cho GPU 8GB VRAM (tham so nho hon):
+```yaml
+model:
+  num_layers: 12
+  model_dim: 512
+  num_heads: 8
+  num_groups: 4
+  experts_per_group: 4
+  total_experts: 16
+  # ...
+
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+
+training:
+  batch_size: 4
+```
+
+### 3. Chay huan luyen
+
+```bash
+# Huan luyen voi cau hinh mac dinh (24GB+ VRAM)
+python train.py --config config/default.yaml
+
+# Huan luyen voi cau hinh 8GB VRAM
+python train.py --config config/8gb.yaml --batch-size 4
+
+# Chi dinh cac tham so tuy chinh (ghi de config)
 python train.py \
-    --config config.json \
-    --num-epochs 100 \
-    --batch-size 16 \
+    --config config/8gb.yaml \
+    --num-epochs 50 \
+    --batch-size 4 \
     --learning-rate 1e-3 \
     --output-dir checkpoints
 
-# Tiếp tục huấn luyện từ checkpoint
-python train.py --resume --output-dir checkpoints
+# Tiep tuc huan luyen tu checkpoint
+python train.py --config config/default.yaml --resume --output-dir checkpoints
 ```
 
-### 4. Theo dõi quá trình huấn luyện
+### 4. Theo doi qua trinh huan luyen
 
-Trong quá trình train, script sẽ hiển thị:
-- Loss trung bình mỗi epoch
-- WER, PER, Gini coefficient sau mỗi epoch
-- Checkpoint được lưu sau mỗi 10 epoch
+- Loss trung binh moi epoch hien thi qua tqdm progress bar
+- WER duoc danh gia tren validation set moi epoch
+- Neu dung wandb, metrics duoc log tu dong
+- Checkpoint duoc luu sau moi 10 epoch tai thu muc output
 
-### 5. Các bước tiếp theo (TODO)
+### 5. Giai thich tham so MoE quan trong
 
-- [ ] Tích hợp RNN-T loss thực tế (sử dụng warp-transducer hoặc jax-triton)
-- [ ] Cập nhật `load_data_batch()` để load dữ liệu LibriSpeech thật
-- [ ] Hoàn thiện cơ chế Competition để update trọng số expert thực sự
-- [ ] Thêm evaluation trên test set
-- [ ] Tối ưu hóa tốc độ huấn luyện với JAX pmap (multi-GPU)
+| Tham so | Y nghia |
+|---------|--------|
+| `num_groups` | So nhom expert (moi nhom chuyen biet mot loai du lieu) |
+| `experts_per_group` | So expert trong moi nhom |
+| `total_experts` | Tong so expert = num_groups x experts_per_group |
+| `top_k_groups` | So nhom duoc kich hoat moi lan suy luan (thuong la 1) |
+| `top_k_inference` | So expert duoc chon trong nhom da kich hoat (thuong la 2) |
 
-## Tham khảo
+Luong du lieu: `Audio -> Gating Network -> Chon top_k_groups nhom -> Trong nhom chon top_k_inference expert -> Ket hop dau ra`
+
+### 6. Cac buoc tiep theo (TODO)
+
+- [x] Tich hop load du lieu LibriSpeech thuc te (da hoan thanh)
+- [x] Chuyen tu JAX sang PyTorch (da hoan thanh)
+- [x] Su dung YAML config thay vi JSON/dataclass (da hoan thanh)
+- [ ] Tich hop RNN-T loss thuc te (hien dang la placeholder)
+- [ ] Hoan thien co che Competition de update trong so expert thuc su
+- [ ] Them evaluation tren test set voi WER/PER day du
+- [ ] Toi uu toc do huan luyen (multi-GPU, mixed precision)
+
+## Tham khao
 
 - [Conformer: Convolution-augmented Transformer for Speech Recognition](https://arxiv.org/abs/2005.08100)
 - [RNN-T: Sequence Transduction with Recurrent Neural Networks](https://arxiv.org/abs/1211.3711)
 - [Mixture of Experts (MoE)](https://arxiv.org/abs/1701.06538)
-- [JAX Documentation](https://jax.readthedocs.io/)
-- [Flax Documentation](https://flax.readthedocs.io/)
+- [PyTorch Documentation](https://pytorch.org/docs/)
+- [torchaudio Documentation](https://pytorch.org/audio/)

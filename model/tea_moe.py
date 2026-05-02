@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
-from .config import ModelConfig
 from .gating import GatingNetwork
 from .moe_conformer import MoEConformerEncoder
 from .rnnt_decoder import RNNTDecoder
@@ -13,21 +12,21 @@ class TeaMoEModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.input_proj = nn.Linear(config.n_mels, config.model_dim)
+        self.input_proj = nn.Linear(config['n_mels'], config['model_dim'])
         self.gating = GatingNetwork(
-            num_groups=config.num_groups,
-            model_dim=config.model_dim
+            num_groups=config['num_groups'],
+            model_dim=config['model_dim']
         )
         self.encoder = MoEConformerEncoder(config=config)
         self.decoder = RNNTDecoder(config=config)
-        num_phones = getattr(config, 'num_phones', 256)
-        self.phone_head = nn.Linear(config.model_dim, num_phones)
+        num_phones = config.get('num_phones', 256)
+        self.phone_head = nn.Linear(config['model_dim'], num_phones)
         self.loss_fn = CombinedLoss(
-            load_balance_weight=config.load_balance_weight,
-            z_loss_weight=config.z_loss_weight,
-            distillation_weight=config.distillation_weight,
-            ctc_phone_weight=config.ctc_phone_weight,
-            blank_id=config.blank_id
+            load_balance_weight=config['load_balance_weight'],
+            z_loss_weight=config['z_loss_weight'],
+            distillation_weight=config['distillation_weight'],
+            ctc_phone_weight=config['ctc_phone_weight'],
+            blank_id=config['blank_id']
         )
 
     def forward(self, audio_features, targets, phone_targets=None, deterministic=True):

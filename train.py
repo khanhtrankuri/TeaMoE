@@ -411,7 +411,7 @@ def main():
         # Training
         model.train()
         epoch_loss = 0.0
-        expert_usage = np.zeros(model_cfg['total_experts'])
+        expert_usage = np.zeros(model_cfg['num_groups'])
         step_count = 0
 
         pbar = tqdm(train_loader, desc="Training")

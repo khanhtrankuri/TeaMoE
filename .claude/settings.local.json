@@ -6,7 +6,10 @@
       "Bash(python -m py_compile model/tea_moe.py)",
       "Bash(python -m py_compile model/moe_conformer.py)",
       "Bash(python -m py_compile model/rnnt_decoder.py)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(powershell -Command \"Get-Content README.md -First 3 | Format-Hex\")",
+      "Bash(powershell -Command \"Get-Content README.md | Set-Content README_utf8.md -Encoding UTF8\")",
+      "Bash(move /Y README_utf8.md README.md)"
     ]
   }
 }

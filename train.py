@@ -15,6 +15,7 @@ import optax
 from flax.training import train_state, checkpoints
 import numpy as np
 from tqdm import tqdm
+import wandb
 
 from model.config import ModelConfig
 from model.tea_moe import TeaMoEModel
@@ -337,6 +338,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    parser.add_argument("--wandb-project", type=str, default="TeaMoE", help="WandB project name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="WandB entity name")
     args = parser.parse_args()
 
     if args.config and os.path.exists(args.config):
@@ -348,6 +351,23 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize WandB
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        config={
+            "num_epochs": args.num_epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "model_dim": config.model_dim,
+            "num_layers": config.num_layers,
+            "num_groups": config.num_groups,
+            "total_experts": config.total_experts,
+            "distillation_weight": config.distillation_weight,
+            "load_balance_weight": config.load_balance_weight,
+        }
+    )
 
     rng = random.PRNGKey(0)
     state = create_train_state(rng, config, args.learning_rate)
@@ -364,11 +384,18 @@ def main():
         num_train_batches = 100
         pbar = tqdm(range(num_train_batches), desc="Training")
         epoch_loss = 0.0
+        epoch_metrics = {}
 
-        for _ in pbar:
+        for batch_idx in pbar:
             batch = load_data_batch(args.batch_size, split="train")
             state, metrics, rng = train_step(state, batch, rng)
             epoch_loss += metrics['loss']
+
+            # Accumulate metrics
+            for k, v in metrics.items():
+                if k not in epoch_metrics:
+                    epoch_metrics[k] = []
+                epoch_metrics[k].append(v)
 
             if state.step_count % config.competition_freq_steps == 0 and state.step_count > 0:
                 print(f"\nRunning competition at step {state.step_count}...")
@@ -377,6 +404,19 @@ def main():
             pbar.set_postfix({'loss': metrics['loss']})
 
         avg_loss = epoch_loss / num_train_batches
+
+        # Log training metrics to WandB
+        wandb_log = {
+            "epoch": epoch + 1,
+            "train/avg_loss": avg_loss,
+        }
+
+        # Log individual loss components if available
+        if isinstance(metrics.get('loss_dict'), dict):
+            for loss_name, loss_val in metrics['loss_dict'].items():
+                if loss_name != 'total':
+                    wandb_log[f"train/{loss_name}_loss"] = float(loss_val)
+
         print(f"Epoch {epoch + 1} avg loss: {avg_loss:.4f}")
 
         print("Evaluating...")
@@ -385,6 +425,14 @@ def main():
         print("Evaluation results:")
         for key, val in eval_metrics.items():
             print(f"  {key}: {val:.4f}")
+            wandb_log[f"eval/{key.lower()}"] = val
+
+        # Log expert usage statistics
+        if state.expert_usage is not None:
+            usage_normalized = state.expert_usage / (np.sum(state.expert_usage) + 1e-8)
+            wandb_log["eval/expert_usage_gini"] = compute_gini_coefficient(state.expert_usage)
+
+        wandb.log(wandb_log, step=epoch + 1)
 
         if (epoch + 1) % 10 == 0 or epoch == args.num_epochs - 1:
             checkpoints.save_checkpoint(str(output_dir), state, step=state.step_count, overwrite=True)
@@ -392,6 +440,7 @@ def main():
 
         state = state.replace(expert_usage=np.zeros(config.total_experts))
 
+    wandb.finish()
     print("\nTraining completed!")
     print(f"Final checkpoints saved to: {output_dir}")
 

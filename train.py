@@ -7,13 +7,10 @@ import json
 import argparse
 from typing import List, Dict, Tuple
 from pathlib import Path
-
-import jax
-import jax.numpy as jnp
-from jax import random
-import optax
-from flax.training import train_state, checkpoints
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
 
@@ -68,7 +65,7 @@ def compute_gini_coefficient(expert_usage_counts: np.ndarray) -> float:
     return (2 * np.sum(index * counts)) / (n * np.sum(counts)) - (n + 1) / n
 
 
-def compute_cosine_distance_experts(expert_weights: List[jnp.ndarray]) -> float:
+def compute_cosine_distance_experts(expert_weights: List[torch.Tensor]) -> float:
     """Average cosine distance between experts for diversity measurement"""
     n = len(expert_weights)
     if n < 2:
@@ -78,8 +75,8 @@ def compute_cosine_distance_experts(expert_weights: List[jnp.ndarray]) -> float:
     for i in range(n):
         for j in range(i + 1, n):
             w1, w2 = expert_weights[i], expert_weights[j]
-            dot = jnp.sum(w1 * w2)
-            norm = jnp.linalg.norm(w1) * jnp.linalg.norm(w2) + 1e-8
+            dot = torch.sum(w1 * w2)
+            norm = torch.norm(w1) * torch.norm(w2) + 1e-8
             cos_sim = dot / norm
             total_dist += 1.0 - cos_sim
             count += 1
@@ -88,238 +85,143 @@ def compute_cosine_distance_experts(expert_weights: List[jnp.ndarray]) -> float:
 
 # ==================== Decoding ====================
 
-def greedy_decode_rnnt(logits: jnp.ndarray, blank_id: int = 0) -> List[int]:
+def greedy_decode_rnnt(logits: torch.Tensor, blank_id: int = 0) -> List[int]:
     """Greedy decoding for RNN-T output"""
     time_steps, label_len = logits.shape[0], logits.shape[1]
     decoded = []
     prev = -1
     for t in range(time_steps):
         for l in range(label_len):
-            token = int(jnp.argmax(logits[t, l]))
+            token = int(torch.argmax(logits[t, l]))
             if token != blank_id and token != prev:
                 decoded.append(token)
                 prev = token
     return decoded
 
 
-def greedy_decode_phone(phone_logits: jnp.ndarray) -> List[int]:
+def greedy_decode_phone(phone_logits: torch.Tensor) -> List[int]:
     """Decode phone predictions"""
-    preds = jnp.argmax(phone_logits, axis=-1)
+    preds = torch.argmax(phone_logits, dim=-1)
     return [int(p) for p in preds]
 
 
 # ==================== Data Loading Placeholder ====================
 
-def load_data_batch(batch_size: int = 16, split: str = "train"):
+def load_data_batch(batch_size: int = 16, split: str = "train", device: str = "cpu"):
     """Placeholder for data loading from processed_data_librispeech/"""
-    key = random.PRNGKey(42)
-    audio_features = random.normal(key, (batch_size, 100, 80))
-    targets = random.randint(key, (batch_size, 20), minval=1, maxval=5000)
-    phone_targets = random.randint(key, (batch_size, 100), minval=1, maxval=256)
-    input_lengths = jnp.array([100] * batch_size)
-    target_lengths = jnp.array([20] * batch_size)
-    phone_lengths = jnp.array([100] * batch_size)
+    audio_features = torch.randn(batch_size, 100, 80, device=device)
+    targets = torch.randint(1, 5000, (batch_size, 20), device=device)
+    phone_targets = torch.randint(1, 256, (batch_size, 100), device=device)
+    input_lengths = torch.full((batch_size,), 100, device=device)
+    target_lengths = torch.full((batch_size,), 20, device=device)
+    phone_lengths = torch.full((batch_size,), 100, device=device)
     return audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths
-
-
-# ==================== Train State ====================
-
-class TrainState(train_state.TrainState):
-    """Extended train state for TeaMoE"""
-    competition: NaturalNichesCompetition = None
-    distillation: ExpertDistillation = None
-    loss_fn: CombinedLoss = None
-    rng: jnp.ndarray = None
-    expert_usage: np.ndarray = None
-    step_count: int = 0
-
-
-def create_train_state(
-    rng: jnp.ndarray,
-    config: ModelConfig,
-    learning_rate: float = 1e-3
-) -> TrainState:
-    """Initialize train state"""
-    model = TeaMoEModel(config=config)
-    competition = NaturalNichesCompetition(config)
-    distillation = ExpertDistillation(config.distillation_weight)
-    loss_fn = CombinedLoss(
-        load_balance_weight=config.load_balance_weight,
-        z_loss_weight=config.z_loss_weight,
-        distillation_weight=config.distillation_weight,
-        ctc_phone_weight=config.ctc_phone_weight,
-        blank_id=config.blank_id
-    )
-
-    rng, init_rng = random.split(rng)
-    dummy_audio = jnp.ones((1, 100, config.n_mels))
-    dummy_targets = jnp.ones((1, 10), dtype=jnp.int32)
-    dummy_phone_targets = jnp.ones((1, 100), dtype=jnp.int32)
-    variables = model.init(init_rng, dummy_audio, dummy_targets, dummy_phone_targets, deterministic=False)
-    params = variables['params']
-
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=learning_rate,
-        warmup_steps=50000,
-        decay_steps=500000,
-        end_value=1e-5
-    )
-    tx = optax.adamw(learning_rate=schedule, weight_decay=0.01)
-
-    return TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=tx,
-        competition=competition,
-        distillation=distillation,
-        loss_fn=loss_fn,
-        rng=rng,
-        expert_usage=np.zeros(config.total_experts),
-        step_count=0
-    )
 
 
 # ==================== Training Step ====================
 
-@jax.jit
-def train_step(state: TrainState, batch, rng_key):
+def train_step(model, optimizer, batch, rng_key=None):
     """Single training step"""
     audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
 
-    rng_key, dropout_rng = random.split(rng_key)
+    optimizer.zero_grad()
 
-    def loss_fn(params):
-        rng1, rng2 = random.split(dropout_rng)
-        outputs = state.apply_fn(
-            {'params': params},
-            audio_features,
-            targets,
-            phone_targets,
-            deterministic=False,
-            rngs={'dropout': rng1}
-        )
-        # outputs is a tuple: (model_outputs, aux_outputs)
-        if isinstance(outputs, tuple) and len(outputs) == 2:
-            model_out, aux_outputs = outputs
-        else:
-            model_out = outputs
-            aux_outputs = {}
-
-        rnnt_logits = model_out[0] if isinstance(model_out, tuple) else model_out
-        group_probs = aux_outputs.get('group_probs')
-        group_ids = aux_outputs.get('group_ids')
-        phone_logits = aux_outputs.get('phone_logits')
-
-        group_logits = jnp.log(group_probs + 1e-8) if group_probs is not None else None
-
-        # Distillation loss placeholder
-        distillation_loss = 0.0
-
-        total_loss, loss_dict = state.loss_fn.total_loss(
-            rnnt_logits=rnnt_logits,
-            targets=targets,
-            input_lengths=input_lengths,
-            target_lengths=target_lengths,
-            group_probs=group_probs,
-            group_ids=group_ids,
-            group_logits=group_logits,
-            distillation_loss=distillation_loss,
-            phone_logits=phone_logits,
-            phone_targets=phone_targets,
-            phone_lengths=phone_lengths
-        )
-        return total_loss, (loss_dict, group_ids)
-
-    grad_fn = jax.grad(loss_fn, has_aux=True)
-    grads, (loss_dict, group_ids) = grad_fn(state.params)
-
-    state = state.apply_gradients(grads=grads)
-
-    # Update expert usage statistics
-    if group_ids is not None:
-        group_ids_flat = group_ids.reshape(-1)
-        usage = np.bincount(np.array(group_ids_flat), minlength=state.competition.num_groups)
-        state = state.replace(
-            expert_usage=state.expert_usage + usage
-        )
-
-    state = state.replace(
-        step_count=state.step_count + 1
+    rnnt_logits, aux_outputs = model(
+        audio_features, targets, phone_targets, deterministic=False
     )
 
-    loss_val = loss_dict['total'] if isinstance(loss_dict, dict) and 'total' in loss_dict else loss_dict
-    return state, {'loss': float(loss_val), 'loss_dict': loss_dict}, rng_key
+    group_probs = aux_outputs.get('group_probs')
+    group_ids = aux_outputs.get('group_ids')
+    phone_logits = aux_outputs.get('phone_logits')
+
+    group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+
+    # Distillation loss placeholder
+    distillation_loss = torch.tensor(0.0, device=audio_features.device)
+
+    total_loss, loss_dict = model.compute_loss(
+        rnnt_logits=rnnt_logits,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+        group_probs=group_probs,
+        group_ids=group_ids,
+        group_logits=group_logits,
+        distillation_loss=distillation_loss,
+        phone_logits=phone_logits,
+        phone_targets=phone_targets,
+        phone_lengths=phone_lengths
+    )
+
+    total_loss.backward()
+    optimizer.step()
+
+    # Update expert usage statistics
+    expert_usage = np.zeros(model.config.total_experts)
+    if group_ids is not None:
+        group_ids_flat = group_ids.reshape(-1).cpu()
+        usage = np.bincount(group_ids_flat.numpy(), minlength=model.config.num_groups)
+        expert_usage = usage
+
+    loss_val = loss_dict['total'].item() if isinstance(loss_dict, dict) and 'total' in loss_dict else loss_dict.item()
+    return model, {'loss': loss_val, 'loss_dict': loss_dict}, expert_usage
 
 
 # ==================== Competition Step ====================
 
-def run_competition(state: TrainState, rng_key):
+def run_competition(model, competition, rng_key=None):
     """Run natural niches competition to evolve experts"""
-    rng_key, subkey = random.split(rng_key)
-
     # Simplified: generate random expert weights for demonstration
-    expert_weights = jnp.ones((state.competition.num_groups, state.competition.experts_per_group, 1024))
+    expert_weights = [p.clone() for p in model.parameters()]
 
     # Generate random fitness scores for demonstration
     num_datapoints = 100
-    scores = jax.random.normal(subkey, (state.competition.num_experts, num_datapoints))
+    scores = torch.randn(competition.num_experts, num_datapoints)
 
     # Run competition for each group
-    for group_id in range(state.competition.num_groups):
-        parent_1_idx, parent_2_idx = state.competition.sample_parents(
-            expert_weights.reshape(-1, 1024), scores, subkey, group_id
+    for group_id in range(competition.num_groups):
+        parent_1_idx, parent_2_idx = competition.sample_parents(
+            expert_weights, scores, rng_key, group_id
         )
         # In practice, would update actual params using competition.run_competition_step
 
-    return state, rng_key
+    return model
 
 
 # ==================== Evaluation ====================
 
-def evaluate(state: TrainState, eval_batches):
+def evaluate(model, eval_batches, device: str = "cpu"):
     """Evaluate model on validation set"""
     all_preds = []
     all_targets = []
     all_phone_preds = []
     all_phone_targets = []
 
-    for batch in eval_batches:
-        audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
+    model.eval()
+    with torch.no_grad():
+        for batch in eval_batches:
+            audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
 
-        rng = random.PRNGKey(0)
-        outputs = state.apply_fn(
-            {'params': state.params},
-            audio_features,
-            targets,
-            phone_targets,
-            deterministic=True,
-            rngs={'dropout': rng}
-        )
+            rnnt_logits, aux_outputs = model(
+                audio_features, targets, phone_targets, deterministic=True
+            )
+            phone_logits = aux_outputs.get('phone_logits')
 
-        if isinstance(outputs, tuple) and len(outputs) == 2:
-            model_out, aux_outputs = outputs
-        else:
-            model_out = outputs
-            aux_outputs = {}
-
-        rnnt_logits = model_out[0] if isinstance(model_out, tuple) else model_out
-        phone_logits = aux_outputs.get('phone_logits')
-
-        for i in range(len(audio_features)):
-            pred = greedy_decode_rnnt(rnnt_logits[i], state.loss_fn.blank_id)
-            all_preds.append(pred)
-            all_targets.append(list(targets[i]))
-
-        if phone_logits is not None:
             for i in range(len(audio_features)):
-                pred_phones = greedy_decode_phone(phone_logits[i])
-                all_phone_preds.append(pred_phones)
-                all_phone_targets.append(list(phone_targets[i]))
+                pred = greedy_decode_rnnt(rnnt_logits[i], model.loss_fn.blank_id)
+                all_preds.append(pred)
+                all_targets.append(list(targets[i].cpu().numpy()))
+
+            if phone_logits is not None:
+                for i in range(len(audio_features)):
+                    pred_phones = greedy_decode_phone(phone_logits[i])
+                    all_phone_preds.append(pred_phones)
+                    all_phone_targets.append(list(phone_targets[i].cpu().numpy()))
+    model.train()
 
     wer = compute_wer(all_preds, all_targets)
     per = compute_per(all_phone_preds, all_phone_targets) if all_phone_preds else 0.0
-    gini = compute_gini_coefficient(state.expert_usage)
+    gini = compute_gini_coefficient(np.zeros(model.config.total_experts))  # Placeholder
 
     return {
         'WER': wer,
@@ -340,6 +242,7 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     parser.add_argument("--wandb-project", type=str, default="TeaMoE", help="WandB project name")
     parser.add_argument("--wandb-entity", type=str, default=None, help="WandB entity name")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
     if args.config and os.path.exists(args.config):
@@ -369,37 +272,59 @@ def main():
         }
     )
 
-    rng = random.PRNGKey(0)
-    state = create_train_state(rng, config, args.learning_rate)
+    device = torch.device(args.device)
+    model = TeaMoEModel(config=config).to(device)
+    competition = NaturalNichesCompetition(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
-    if args.resume:
-        state = checkpoints.restore_checkpoint(str(output_dir), state)
+    # Learning rate scheduler with warmup
+    warmup_steps = 50000
+    total_steps = 500000
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: min(step / warmup_steps, 1.0) * 0.5 * (1 + torch.cos(torch.pi * min(step, total_steps) / total_steps)) + 1e-5 / args.learning_rate
+        if step < total_steps else 1e-5 / args.learning_rate
+    )
 
-    print(f"Starting training for {args.num_epochs} epochs...")
+    start_epoch = 0
+    if args.resume and (output_dir / "checkpoint.pt").exists():
+        checkpoint = torch.load(output_dir / "checkpoint.pt", map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        print(f"Resumed from epoch {start_epoch}")
+
+    print(f"Starting training for {args.num_epochs} epochs on {device}...")
     print(f"Model config: {config}")
 
-    for epoch in range(args.num_epochs):
+    step_count = 0
+    for epoch in range(start_epoch, args.num_epochs):
         print(f"\n=== Epoch {epoch + 1}/{args.num_epochs} ===")
 
         num_train_batches = 100
         pbar = tqdm(range(num_train_batches), desc="Training")
         epoch_loss = 0.0
         epoch_metrics = {}
+        expert_usage = np.zeros(config.total_experts)
 
         for batch_idx in pbar:
-            batch = load_data_batch(args.batch_size, split="train")
-            state, metrics, rng = train_step(state, batch, rng)
-            epoch_loss += metrics['loss']
+            batch = load_data_batch(args.batch_size, split="train", device=device)
+            model, metrics, batch_usage = train_step(model, optimizer, batch)
+            scheduler.step()
+            step_count += 1
 
-            # Accumulate metrics
+            epoch_loss += metrics['loss']
+            expert_usage += batch_usage
+
             for k, v in metrics.items():
                 if k not in epoch_metrics:
                     epoch_metrics[k] = []
                 epoch_metrics[k].append(v)
 
-            if state.step_count % config.competition_freq_steps == 0 and state.step_count > 0:
-                print(f"\nRunning competition at step {state.step_count}...")
-                state, rng = run_competition(state, rng)
+            if step_count % config.competition_freq_steps == 0 and step_count > 0:
+                print(f"\nRunning competition at step {step_count}...")
+                model = run_competition(model, competition)
 
             pbar.set_postfix({'loss': metrics['loss']})
 
@@ -411,7 +336,6 @@ def main():
             "train/avg_loss": avg_loss,
         }
 
-        # Log individual loss components if available
         if isinstance(metrics.get('loss_dict'), dict):
             for loss_name, loss_val in metrics['loss_dict'].items():
                 if loss_name != 'total':
@@ -420,25 +344,23 @@ def main():
         print(f"Epoch {epoch + 1} avg loss: {avg_loss:.4f}")
 
         print("Evaluating...")
-        eval_batches = [load_data_batch(args.batch_size, split="validation") for _ in range(10)]
-        eval_metrics = evaluate(state, eval_batches)
+        eval_batches = [load_data_batch(args.batch_size, split="validation", device=device) for _ in range(10)]
+        eval_metrics = evaluate(model, eval_batches, device)
         print("Evaluation results:")
         for key, val in eval_metrics.items():
             print(f"  {key}: {val:.4f}")
             wandb_log[f"eval/{key.lower()}"] = val
 
-        # Log expert usage statistics
-        if state.expert_usage is not None:
-            usage_normalized = state.expert_usage / (np.sum(state.expert_usage) + 1e-8)
-            wandb_log["eval/expert_usage_gini"] = compute_gini_coefficient(state.expert_usage)
-
         wandb.log(wandb_log, step=epoch + 1)
 
         if (epoch + 1) % 10 == 0 or epoch == args.num_epochs - 1:
-            checkpoints.save_checkpoint(str(output_dir), state, step=state.step_count, overwrite=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+            }, output_dir / "checkpoint.pt")
             print(f"Checkpoint saved to {output_dir}")
-
-        state = state.replace(expert_usage=np.zeros(config.total_experts))
 
     wandb.finish()
     print("\nTraining completed!")

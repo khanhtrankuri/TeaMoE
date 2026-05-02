@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-rate",
         type=int,
-        default=22050,
+        default=16000,
         help="Target WAV sample rate. Use 0 to preserve the original rate.",
     )
     parser.add_argument(

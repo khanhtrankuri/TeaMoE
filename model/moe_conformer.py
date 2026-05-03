@@ -70,7 +70,7 @@ class MoEConformerLayer(nn.Module):
         self.attn_dropout = nn.Dropout(0.1)
         self.moe_dropout = nn.Dropout(0.1)
 
-    def _forward_impl(self, x, group_ids, deterministic=True):
+    def _forward_impl(self, x, group_ids, deterministic=True, use_checkpoint=False):
         residual = x
         x = self.conv_norm(x)
         x_conv = x.permute(0, 2, 1)
@@ -114,8 +114,8 @@ class MoEConformerLayer(nn.Module):
     def forward(self, x, group_ids, deterministic=True, use_checkpoint=False):
         if use_checkpoint and self.training and x.requires_grad:
             from torch.utils.checkpoint import checkpoint
-            return checkpoint(self._forward_impl, x, group_ids, deterministic, use_reentrant=False)
-        return self._forward_impl(x, group_ids, deterministic)
+            return checkpoint(self._forward_impl, x, group_ids, deterministic, use_checkpoint, use_reentrant=False)
+        return self._forward_impl(x, group_ids, deterministic, use_checkpoint)
 
 
 class MoEConformerEncoder(nn.Module):

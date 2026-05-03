@@ -351,11 +351,12 @@ def evaluate(
     eval_loader: DataLoader,
     device: torch.device,
     use_checkpoint: bool = False,
+    pretrained_checkpoint_dir: Optional[str] = None,
 ) -> Dict[str, float]:
     """Đánh giá mô hình trên tập validation.
 
     Returns:
-        dict gồm: WER, PER, Gini, ExpertCosineDistance
+        dict gồm: WER, PER, Gini, ExpertCosineDistance, SpecializationIndex (if pretrained provided)
     """
     all_preds: List[List[int]] = []
     all_targets: List[List[int]] = []
@@ -389,7 +390,6 @@ def evaluate(
 
             phone_logits = aux_outputs.get("phone_logits")
 
-            # Thu thập dự đoán theo từng mẫu trong batch
             B = audio_features.shape[0]
             for i in range(B):
                 pred = greedy_decode_rnnt(rnnt_logits[i], BLANK_ID)
@@ -403,7 +403,6 @@ def evaluate(
                     all_phone_preds.append(pred)
                 all_phone_targets.append(phone_targets[i].cpu().tolist())
 
-            # Thống kê expert usage
             try:
                 num_experts = (
                     model.config["num_groups"] * model.config["experts_per_group"]
@@ -428,12 +427,38 @@ def evaluate(
     )
     cosine_dist = compute_expert_cosine_distances(model)
 
-    return {
+    metrics = {
         "WER": wer,
         "PER": per,
         "Gini": gini,
         "ExpertCosineDistance": cosine_dist,
     }
+
+    # Compute specialization if pretrained weights available
+    if pretrained_checkpoint_dir is not None:
+        try:
+            from diagnostics import compute_group_specialization_scores
+            pretrained_dir = Path(pretrained_checkpoint_dir)
+            num_groups = model.config.get("num_groups", 8)
+            experts_per_group = model.config.get("experts_per_group", 5)
+
+            pretrained_weights = []
+            for g in range(num_groups):
+                group_weights = {}
+                for e in range(experts_per_group):
+                    ckpt_path = pretrained_dir / f"expert_M{e+1}.pt"
+                    if ckpt_path.exists():
+                        pretrained_ckpt = torch.load(ckpt_path, map_location="cpu")
+                        group_weights[f"expert_{e}"] = pretrained_ckpt["expert_state_dict"]
+                pretrained_weights.append(group_weights)
+
+            scores = compute_group_specialization_scores(model, pretrained_weights)
+            metrics["SpecializationIndex"] = float(np.mean(scores["specialization_index"]))
+            metrics["GroupSpecialization"] = scores["specialization_index"].tolist()
+        except Exception as e:
+            print(f"[WARN] Specialization tracking failed: {e}")
+
+    return metrics
 
 
 # ==================== Natural Niches Competition ====================
@@ -800,30 +825,40 @@ def main():
 
                 # --- Evaluation ---
                 if global_step % eval_every == 0:
+                    # Get pretrained checkpoint dir for specialization tracking
+                    pretrained_dir = None
+                    if model_cfg.get("group_expert_pretrained_paths") is not None:
+                        # Extract directory from first path
+                        first_path = model_cfg["group_expert_pretrained_paths"][0][0]
+                        if first_path is not None:
+                            pretrained_dir = Path(first_path).parent
+
                     eval_metrics = evaluate(
-                        model, valid_loader, device, use_checkpoint
+                        model, valid_loader, device, use_checkpoint, pretrained_dir
                     )
                     wer = eval_metrics["WER"]
                     per = eval_metrics["PER"]
                     gini = eval_metrics["Gini"]
                     cosine_d = eval_metrics["ExpertCosineDistance"]
+                    spec_idx = eval_metrics.get("SpecializationIndex", None)
 
                     pbar.write(
                         f"[Step {global_step}] "
                         f"WER={wer:.2f}%  PER={per:.2f}%  "
                         f"Gini={gini:.4f}  CosDist={cosine_d:.4f}"
+                        + (f"  Spec={spec_idx:.4f}" if spec_idx is not None else "")
                     )
 
                     if use_wandb:
-                        wandb.log(
-                            {
-                                "eval/wer": wer,
-                                "eval/per": per,
-                                "eval/gini": gini,
-                                "eval/expert_cosine_distance": cosine_d,
-                            },
-                            step=global_step,
-                        )
+                        wandb_log = {
+                            "eval/wer": wer,
+                            "eval/per": per,
+                            "eval/gini": gini,
+                            "eval/expert_cosine_distance": cosine_d,
+                        }
+                        if "SpecializationIndex" in eval_metrics:
+                            wandb_log["eval/specialization_index"] = eval_metrics["SpecializationIndex"]
+                        wandb.log(wandb_log, step=global_step)
 
                     # Lưu model tốt nhất
                     if wer < best_wer:

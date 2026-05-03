@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import List, Optional
 
 
 class Expert(nn.Module):
@@ -24,15 +24,21 @@ class Expert(nn.Module):
 
 
 class ExpertGroup(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, expert_pretrained_paths: Optional[List[str]] = None):
         super().__init__()
         self.config = config
         for i in range(config['num_experts']):
-            setattr(self, f"expert_{i}", Expert(
+            expert = Expert(
                 expert_dim=config['expert_dim'],
                 ff_multiplier=config['ff_multiplier'],
                 dropout=config['dropout'],
-            ))
+            )
+            if expert_pretrained_paths is not None and i < len(expert_pretrained_paths):
+                pretrained_path = expert_pretrained_paths[i]
+                if pretrained_path is not None:
+                    state_dict = torch.load(pretrained_path, map_location='cpu')
+                    expert.load_state_dict(state_dict)
+            setattr(self, f"expert_{i}", expert)
 
     def forward(self, x, deterministic=True, use_checkpoint=False):
         outputs = []

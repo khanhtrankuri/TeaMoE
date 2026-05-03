@@ -11,7 +11,9 @@ class ConformerLayer(nn.Module):
         self.model_dim = model_dim
         self.dropout = dropout
         self.conv_norm = nn.LayerNorm(model_dim)
-        self.conv = nn.Conv1d(model_dim, model_dim, kernel_size=conv_kernel_size, padding=conv_kernel_size//2)
+        # Use padding to maintain sequence length
+        self.conv = nn.Conv1d(model_dim, model_dim, kernel_size=conv_kernel_size,
+                              padding=conv_kernel_size//2, groups=model_dim)
         self.conv_gelu = nn.GELU()
         self.conv_dropout = nn.Dropout(dropout)
         self.attn_norm = nn.LayerNorm(model_dim)
@@ -122,9 +124,13 @@ class MoEConformerEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.expert_groups = nn.ModuleList([
-            ExpertGroup(group_cfg) for group_cfg in config['group_configs']
-        ])
+        group_expert_pretrained_paths = config.get('group_expert_pretrained_paths', None)
+        self.expert_groups = nn.ModuleList()
+        for i, group_cfg in enumerate(config['group_configs']):
+            expert_pretrained_paths = None
+            if group_expert_pretrained_paths is not None:
+                expert_pretrained_paths = group_expert_pretrained_paths[i]
+            self.expert_groups.append(ExpertGroup(group_cfg, expert_pretrained_paths))
         self.pre_layers = nn.ModuleList([
             ConformerLayer(
                 model_dim=config['model_dim'],

@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import List, Optional
 from .gating import GatingNetwork
 from .moe_conformer import MoEConformerEncoder
 from .rnnt_decoder import RNNTDecoder
@@ -29,13 +28,14 @@ class TeaMoEModel(nn.Module):
             blank_id=config['blank_id']
         )
 
-    def forward(self, audio_features, targets, phone_targets=None, deterministic=True):
+    def forward(self, audio_features, targets, phone_targets=None, deterministic=True, use_checkpoint=False):
         x = self.input_proj(audio_features)
         group_probs, group_ids = self.gating(x, deterministic=deterministic)
         encoder_out = self.encoder(
             x,
             group_ids=group_ids,
-            deterministic=deterministic
+            deterministic=deterministic,
+            use_checkpoint=use_checkpoint
         )
         rnnt_logits = self.decoder(
             encoder_out,

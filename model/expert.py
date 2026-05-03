@@ -13,8 +13,14 @@ class Expert(nn.Module):
             nn.Linear(expert_dim * ff_multiplier, expert_dim),
         )
 
-    def forward(self, x, deterministic=True):
+    def _forward_impl(self, x, deterministic=True):
         return self.net(x)
+
+    def forward(self, x, deterministic=True, use_checkpoint=False):
+        if use_checkpoint and self.training and x.requires_grad:
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self._forward_impl, x, deterministic, use_reentrant=False)
+        return self._forward_impl(x, deterministic)
 
 
 class ExpertGroup(nn.Module):
@@ -28,11 +34,11 @@ class ExpertGroup(nn.Module):
                 dropout=config['dropout'],
             ))
 
-    def forward(self, x, deterministic=True):
+    def forward(self, x, deterministic=True, use_checkpoint=False):
         outputs = []
         for i in range(self.config['num_experts']):
             expert = getattr(self, f"expert_{i}")
-            outputs.append(expert(x, deterministic=deterministic))
+            outputs.append(expert(x, deterministic=deterministic, use_checkpoint=use_checkpoint))
         return torch.stack(outputs, dim=1)
 
     def get_expert(self, idx):

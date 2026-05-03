@@ -22,6 +22,9 @@ from model.competition import NaturalNichesCompetition
 from model.distillation import ExpertDistillation
 from model.losses import CombinedLoss
 
+# Set CUDA allocation config to reduce fragmentation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 
 # ==================== Dataset ====================
 
@@ -203,51 +206,86 @@ def greedy_decode_rnnt(logits: torch.Tensor, blank_id: int = 0) -> List[int]:
 
 # ==================== Training Step ====================
 
-def train_step(model, optimizer, batch, rng_key=None):
-    """Single training step"""
+def train_step(model, optimizer, scaler, batch, rng_key=None, gradient_accumulation_steps=1, use_checkpoint=False):
+    """Single training step with optional gradient accumulation and mixed precision
+
+    Returns: model, metrics_dict, should_step (bool - True when accumulation boundary reached)
+    """
     audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
 
-    optimizer.zero_grad()
+    # Use mixed precision if scaler is provided
+    if scaler is not None:
+        with torch.cuda.amp.autocast():
+            rnnt_logits, aux_outputs = model(
+                audio_features, targets, phone_targets,
+                deterministic=False, use_checkpoint=use_checkpoint
+            )
 
-    rnnt_logits, aux_outputs = model(
-        audio_features, targets, phone_targets, deterministic=False
-    )
+            group_probs = aux_outputs.get('group_probs')
+            group_ids = aux_outputs.get('group_ids')
+            phone_logits = aux_outputs.get('phone_logits')
 
-    group_probs = aux_outputs.get('group_probs')
-    group_ids = aux_outputs.get('group_ids')
-    phone_logits = aux_outputs.get('phone_logits')
+            group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
 
-    group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+            # Distillation loss placeholder
+            distillation_loss = torch.tensor(0.0, device=audio_features.device)
 
-    # Distillation loss placeholder
-    distillation_loss = torch.tensor(0.0, device=audio_features.device)
+            total_loss, loss_dict = model.compute_loss(
+                rnnt_logits=rnnt_logits,
+                targets=targets,
+                input_lengths=input_lengths,
+                target_lengths=target_lengths,
+                group_probs=group_probs,
+                group_ids=group_ids,
+                group_logits=group_logits,
+                distillation_loss=distillation_loss,
+                phone_logits=phone_logits,
+                phone_targets=phone_targets,
+                phone_lengths=phone_lengths
+            )
 
-    total_loss, loss_dict = model.compute_loss(
-        rnnt_logits=rnnt_logits,
-        targets=targets,
-        input_lengths=input_lengths,
-        target_lengths=target_lengths,
-        group_probs=group_probs,
-        group_ids=group_ids,
-        group_logits=group_logits,
-        distillation_loss=distillation_loss,
-        phone_logits=phone_logits,
-        phone_targets=phone_targets,
-        phone_lengths=phone_lengths
-    )
+            # Scale loss for gradient accumulation
+            if gradient_accumulation_steps > 1:
+                total_loss = total_loss / gradient_accumulation_steps
 
-    total_loss.backward()
-    optimizer.step()
+        scaler.scale(total_loss).backward()
+    else:
+        rnnt_logits, aux_outputs = model(
+            audio_features, targets, phone_targets,
+            deterministic=False, use_checkpoint=use_checkpoint
+        )
 
-    # Update expert usage statistics
-    expert_usage = np.zeros(model.config['total_experts'])
-    if group_ids is not None:
-        group_ids_flat = group_ids.reshape(-1).cpu()
-        usage = np.bincount(group_ids_flat.numpy(), minlength=model.config['num_groups'])
-        expert_usage = usage
+        group_probs = aux_outputs.get('group_probs')
+        group_ids = aux_outputs.get('group_ids')
+        phone_logits = aux_outputs.get('phone_logits')
 
-    loss_val = loss_dict['total'].item() if isinstance(loss_dict, dict) and 'total' in loss_dict else loss_dict.item()
-    return model, {'loss': loss_val, 'loss_dict': loss_dict}, expert_usage
+        group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+
+        # Distillation loss placeholder
+        distillation_loss = torch.tensor(0.0, device=audio_features.device)
+
+        total_loss, loss_dict = model.compute_loss(
+            rnnt_logits=rnnt_logits,
+            targets=targets,
+            input_lengths=input_lengths,
+            target_lengths=target_lengths,
+            group_probs=group_probs,
+            group_ids=group_ids,
+            group_logits=group_logits,
+            distillation_loss=distillation_loss,
+            phone_logits=phone_logits,
+            phone_targets=phone_targets,
+            phone_lengths=phone_lengths
+        )
+
+        # Scale loss for gradient accumulation
+        if gradient_accumulation_steps > 1:
+            total_loss = total_loss / gradient_accumulation_steps
+
+        total_loss.backward()
+
+    # Return whether this is the accumulation boundary
+    return model, {'loss': loss_dict['total'].item() if isinstance(loss_dict, dict) else loss_dict.item()}, gradient_accumulation_steps == 1
 
 
 # ==================== Competition Step ====================
@@ -269,7 +307,7 @@ def run_competition(model, competition, rng_key=None):
 
 # ==================== Evaluation ====================
 
-def evaluate(model, eval_loader, device: str = "cpu"):
+def evaluate(model, eval_loader, device: str = "cpu", use_checkpoint: bool = False):
     """Evaluate model on validation set"""
     all_preds = []
     all_targets = []
@@ -283,7 +321,8 @@ def evaluate(model, eval_loader, device: str = "cpu"):
             targets = targets.to(device)
 
             rnnt_logits, aux_outputs = model(
-                audio_features, targets, phone_targets, deterministic=True
+                audio_features, targets, phone_targets,
+                deterministic=True, use_checkpoint=use_checkpoint
             )
 
             for i in range(len(audio_features)):
@@ -328,6 +367,11 @@ def main():
     learning_rate = args.learning_rate or train_cfg.get('learning_rate', 1e-3)
     warmup_steps = train_cfg.get('warmup_steps', 50000)
     total_steps = train_cfg.get('total_steps', 500000)
+    gradient_accumulation_steps = train_cfg.get('gradient_accumulation_steps', 1)
+    use_amp = train_cfg.get('use_amp', True)
+    use_checkpoint = train_cfg.get('use_checkpoint', True)
+    checkpoint_every_n_layers = train_cfg.get('checkpoint_every_n_layers', 1)
+    max_grad_norm = train_cfg.get('max_grad_norm', 1.0)
     wandb_project = args.wandb_project or train_cfg.get('wandb_project', 'TeaMoE')
     wandb_entity = args.wandb_entity or train_cfg.get('wandb_entity', None)
     device_str = args.device or train_cfg.get('device', None)
@@ -373,16 +417,30 @@ def main():
 
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=0, collate_fn=collate_fn,
+        num_workers=num_workers, collate_fn=collate_fn,
+        pin_memory=True if device_str == 'cuda' else False,
+        persistent_workers=True if num_workers > 0 else False,
     )
     valid_loader = DataLoader(
         valid_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=0, collate_fn=collate_fn,
+        num_workers=num_workers, collate_fn=collate_fn,
+        pin_memory=True if device_str == 'cuda' else False,
+        persistent_workers=True if num_workers > 0 else False,
     )
 
     model = TeaMoEModel(config=model_cfg).to(device)
+
+    # Use torch.compile if available (PyTorch 2.0+) - additional memory savings
+    use_compile = train_cfg.get('use_compile', False)
+    if use_compile and hasattr(torch, 'compile'):
+        print("Applying torch.compile() for memory optimization...")
+        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+
     competition = NaturalNichesCompetition(model_cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+
+    # Initialize mixed precision scaler
+    scaler = torch.cuda.amp.GradScaler() if use_amp and device_str == 'cuda' else None
 
     # Learning rate scheduler with warmup
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -411,19 +469,44 @@ def main():
         # Training
         model.train()
         epoch_loss = 0.0
-        expert_usage = np.zeros(model_cfg['num_groups'])
         step_count = 0
+        accumulation_steps = 0
 
         pbar = tqdm(train_loader, desc="Training")
         for batch in pbar:
             batch = tuple(b.to(device) if isinstance(b, torch.Tensor) else b for b in batch)
-            model, metrics, batch_usage = train_step(model, optimizer, batch)
-            scheduler.step()
-            step_count += 1
 
+            model, metrics, accumulation_complete = train_step(
+                model, optimizer, scaler, batch,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                use_checkpoint=use_checkpoint
+            )
+
+            # Track progress for gradient accumulation
+            accumulation_steps += 1
+
+            # Only update gradients at accumulation boundary
+            if accumulation_steps >= gradient_accumulation_steps:
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    optimizer.step()
+
+                optimizer.zero_grad()
+                accumulation_steps = 0
+                scheduler.step()
+
+            step_count += 1
             epoch_loss += metrics['loss']
-            expert_usage += batch_usage
             pbar.set_postfix({'loss': metrics['loss']})
+
+            # Clear CUDA cache periodically to reduce fragmentation
+            if step_count % 100 == 0 and device_str == 'cuda':
+                torch.cuda.empty_cache()
 
         avg_loss = epoch_loss / max(step_count, 1)
 
@@ -437,7 +520,7 @@ def main():
 
         # Evaluation
         print("Evaluating...")
-        eval_metrics = evaluate(model, valid_loader, device)
+        eval_metrics = evaluate(model, valid_loader, device, use_checkpoint=use_checkpoint)
         print("Evaluation results:")
         for key, val in eval_metrics.items():
             print(f"  {key}: {val:.4f}")

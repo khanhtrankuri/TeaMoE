@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Optional
 from .expert import ExpertGroup
 
 
@@ -26,7 +26,7 @@ class ConformerLayer(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x, deterministic=True):
+    def _forward_impl(self, x, deterministic=True):
         residual = x
         x = self.conv_norm(x)
         x_conv = x.permute(0, 2, 1)
@@ -48,6 +48,12 @@ class ConformerLayer(nn.Module):
         x = x + residual
         return x
 
+    def forward(self, x, deterministic=True, use_checkpoint=False):
+        if use_checkpoint and self.training and x.requires_grad:
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self._forward_impl, x, deterministic, use_reentrant=False)
+        return self._forward_impl(x, deterministic)
+
 
 class MoEConformerLayer(nn.Module):
     def __init__(self, config, expert_groups):
@@ -64,7 +70,7 @@ class MoEConformerLayer(nn.Module):
         self.attn_dropout = nn.Dropout(0.1)
         self.moe_dropout = nn.Dropout(0.1)
 
-    def forward(self, x, group_ids, deterministic=True):
+    def _forward_impl(self, x, group_ids, deterministic=True):
         residual = x
         x = self.conv_norm(x)
         x_conv = x.permute(0, 2, 1)
@@ -91,7 +97,7 @@ class MoEConformerLayer(nn.Module):
             if not mask.any():
                 continue
             x_group = x_flat[mask]
-            group_outputs = expert_group(x_group, deterministic=deterministic)
+            group_outputs = expert_group(x_group, deterministic=deterministic, use_checkpoint=use_checkpoint)
             group_output = group_outputs.mean(dim=1)
             outputs.append(group_output)
             masks.append(mask)
@@ -104,6 +110,12 @@ class MoEConformerLayer(nn.Module):
         x = self.moe_dropout(x)
         x = x + residual
         return x
+
+    def forward(self, x, group_ids, deterministic=True, use_checkpoint=False):
+        if use_checkpoint and self.training and x.requires_grad:
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self._forward_impl, x, group_ids, deterministic, use_reentrant=False)
+        return self._forward_impl(x, group_ids, deterministic)
 
 
 class MoEConformerEncoder(nn.Module):
@@ -136,11 +148,11 @@ class MoEConformerEncoder(nn.Module):
             for _ in range(config['moe_end_layer'], config['num_layers'])
         ])
 
-    def forward(self, x, group_ids, deterministic=True):
+    def forward(self, x, group_ids, deterministic=True, use_checkpoint=False):
         for layer in self.pre_layers:
-            x = layer(x, deterministic=deterministic)
+            x = layer(x, deterministic=deterministic, use_checkpoint=use_checkpoint)
         for layer in self.moe_layers:
-            x = layer(x, group_ids, deterministic=deterministic)
+            x = layer(x, group_ids, deterministic=deterministic, use_checkpoint=use_checkpoint)
         for layer in self.post_layers:
-            x = layer(x, deterministic=deterministic)
+            x = layer(x, deterministic=deterministic, use_checkpoint=use_checkpoint)
         return x

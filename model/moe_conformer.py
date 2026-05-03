@@ -99,11 +99,12 @@ class MoEConformerLayer(nn.Module):
             if not mask.any():
                 continue
             x_group = x_flat[mask]
-            group_outputs = expert_group(x_group, deterministic=deterministic, use_checkpoint=use_checkpoint)
-            group_output = group_outputs.mean(dim=1)
+            # expert_group returns [N_group, model_dim] - already combined
+            group_output = expert_group(x_group, deterministic=deterministic, use_checkpoint=use_checkpoint)
             outputs.append(group_output)
             masks.append(mask)
 
+        # Scatter back - need to ensure output shapes match
         result = torch.zeros_like(x_flat)
         for mask, out in zip(masks, outputs):
             result[mask] = out
@@ -125,12 +126,25 @@ class MoEConformerEncoder(nn.Module):
         super().__init__()
         self.config = config
         group_expert_pretrained_paths = config.get('group_expert_pretrained_paths', None)
+        use_attention_pooling = config.get('use_attention_pooling', False)
+        attn_heads = config.get('attn_heads', 4)
+        attn_dropout = config.get('attn_dropout', 0.1)
+
         self.expert_groups = nn.ModuleList()
         for i, group_cfg in enumerate(config['group_configs']):
             expert_pretrained_paths = None
             if group_expert_pretrained_paths is not None:
                 expert_pretrained_paths = group_expert_pretrained_paths[i]
-            self.expert_groups.append(ExpertGroup(group_cfg, expert_pretrained_paths))
+
+            # Pass attention pooling config to ExpertGroup
+            group = ExpertGroup(
+                group_cfg,
+                expert_pretrained_paths=expert_pretrained_paths,
+                use_attention_pooling=use_attention_pooling,
+                attn_heads=attn_heads,
+                attn_dropout=attn_dropout
+            )
+            self.expert_groups.append(group)
         self.pre_layers = nn.ModuleList([
             ConformerLayer(
                 model_dim=config['model_dim'],

@@ -1,0 +1,220 @@
+# TeaMoE Configuration with Shared Pretrained Experts
+# Template: Replace CHECKPOINT_DIR with your pretrained experts directory
+
+model:
+  # -------------------- Encoder Backbone --------------------
+  num_layers: 24
+  moe_start_layer: 6
+  moe_end_layer: 18
+  model_dim: 1024
+  num_heads: 16
+  conv_kernel_size: 31
+  ff_multiplier: 4
+
+  # -------------------- MoE Configuration --------------------
+  num_groups: 8
+  experts_per_group: 5
+  total_experts: 40
+  top_k_groups: 1
+  top_k_inference: 2
+
+  # -------------------- Shared Pretrained Experts --------------------
+  # IMPORTANT: Replace "CHECKPOINT_DIR" with actual path to your pretrained experts
+  # All 8 groups share the same 5 pretrained models (M1-M5)
+  group_expert_pretrained_paths:
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 0 (vowels)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 1 (plosives)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 2 (fricatives)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 3 (nasals)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 4 (male_speakers)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 5 (female_speakers)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 6 (clean_audio)
+    - ["CHECKPOINT_DIR/expert_M1.pt",
+       "CHECKPOINT_DIR/expert_M2.pt",
+       "CHECKPOINT_DIR/expert_M3.pt",
+       "CHECKPOINT_DIR/expert_M4.pt",
+       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 7 (other_audio)
+
+  # -------------------- Expert Pooling Strategy --------------------
+  # Recommended: true for shared pretrained experts
+  use_attention_pooling: true    # Token-aware expert weighting
+  attn_heads: 4                  # Multi-head attention
+  attn_dropout: 0.1              # Attention dropout
+
+  # -------------------- Group Configurations --------------------
+  group_configs:
+    - group_id: 0
+      group_name: "vowels"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "vowels"
+    - group_id: 1
+      group_name: "plosives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "plosives"
+    - group_id: 2
+      group_name: "fricatives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "fricatives"
+    - group_id: 3
+      group_name: "nasals"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "nasals"
+    - group_id: 4
+      group_name: "male_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "male"
+    - group_id: 5
+      group_name: "female_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "female"
+    - group_id: 6
+      group_name: "clean_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "clean"
+    - group_id: 7
+      group_name: "other_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "other"
+
+  vocab_size: 5000
+  decoder_hidden: 1024
+  decoder_layers: 2
+  blank_id: 0
+
+  competition_freq_steps: 1000
+  distillation_weight: 0.1
+  load_balance_weight: 0.01
+  z_loss_weight: 0.001
+  ctc_phone_weight: 0.3
+
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+
+  alpha: 0.5
+  use_matchmaker: true
+
+# ============================================================================
+# DATA
+# ============================================================================
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+  max_duration: 30.0
+  num_workers: 8
+
+# ============================================================================
+# TRAINING
+# ============================================================================
+training:
+  num_epochs: 50
+  batch_size: 16
+  learning_rate: 1e-4            # Lower LR for fine-tuning pretrained experts
+  warmup_steps: 10000
+  total_steps: 250000
+  output_dir: "checkpoints/finetuned_shared"
+  resume: false
+
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  use_amp: true
+  use_checkpoint: true
+  use_compile: false
+
+  eval_every_n_steps: 1000
+  log_every_n_steps: 10
+  save_every_n_steps: 5000
+  keep_last_n_checkpoints: 5
+
+  wandb_project: "TeaMoE-shared"
+  wandb_entity: null
+  wandb_tags: ["shared-pretrained", "attention-pooling"]
+  wandb_notes: "Shared pretrained experts M1-M5 across all 8 groups"
+
+  device: null
+  seed: 42
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. Train pretrained experts:
+#    python train_pretrained_experts.py \
+#      --epochs 10 \
+#      --output-dir checkpoints/pretrained
+#
+# 2. Generate this config automatically:
+#    python generate_shared_config.py \
+#      --pretrained-dir checkpoints/pretrained \
+#      --output config/shared_pretrained.yaml
+#
+# 3. Fine-tune TeaMoE:
+#    python train.py \
+#      --config config/shared_pretrained.yaml \
+#      --output-dir checkpoints/finetuned_shared
+#
+# 4. Monitor specialization:
+#    - Check wandb for "specialization_index" metric
+#    - Run: python run_shared_pretrained_workflow.py --phase analyze
+#
+# ============================================================================

@@ -1,27 +1,66 @@
-# Default config for high-VRAM GPUs (e.g. A100, RTX 3090/4090 24GB)
-model:
-  num_layers: 24
-  moe_start_layer: 6
-  moe_end_layer: 18
-  model_dim: 1024
-  num_heads: 16
-  conv_kernel_size: 31
-  ff_multiplier: 4
+# TeaMoE Configuration
+# Mixture of Experts Conformer for Speech Recognition with Shared Pretrained Experts
 
-  num_groups: 8
-  experts_per_group: 5
-  total_experts: 40
-  top_k_groups: 1
-  top_k_inference: 2
-  # Old format (deprecated): group_pretrained_paths - list of paths, one per group
-  # New format: group_expert_pretrained_paths - list of lists, each inner list has paths for each expert
-  # Example with shared pretrained models (5 models shared across all 8 groups):
+# ============================================================================
+# MODEL ARCHITECTURE
+# ============================================================================
+model:
+  # -------------------- Encoder Backbone --------------------
+  # Conformer encoder configuration
+  num_layers: 24                 # Total transformer layers
+  moe_start_layer: 6            # First layer with MoE (0-indexed)
+  moe_end_layer: 18             # Last layer with MoE (exclusive)
+  model_dim: 1024               # Hidden dimension throughout model
+  num_heads: 16                 # Multi-head attention heads
+  conv_kernel_size: 31          # Depthwise conv kernel (must be odd)
+  ff_multiplier: 4              # FFN expansion factor (expert_dim = model_dim * ff_multiplier)
+
+  # -------------------- MoE Configuration --------------------
+  num_groups: 8                 # Number of acoustic groups (vowels, plosives, etc.)
+  experts_per_group: 5          # Number of experts per group
+  total_experts: 40             # num_groups × experts_per_group
+  top_k_groups: 1               # Route to top-k groups during training
+  top_k_inference: 2           # Route to top-k groups during inference
+
+  # -------------------- Shared Pretrained Experts --------------------
+  # Format: List[List[str]] - one inner list per group, each with paths for each expert
+  # Use 'null' for experts to train from scratch.
+  #
+  # Example 1: No pretrained (train from scratch)
+  # group_expert_pretrained_paths: null
+  #
+  # Example 2: Shared pretrained models (5 models shared across all 8 groups)
   # group_expert_pretrained_paths:
-  #   - ["checkpoints/expert_M1.pt", "checkpoints/expert_M2.pt", "checkpoints/expert_M3.pt", "checkpoints/expert_M4.pt", "checkpoints/expert_M5.pt"]  # group 0
-  #   - ["checkpoints/expert_M1.pt", "checkpoints/expert_M2.pt", "checkpoints/expert_M3.pt", "checkpoints/expert_M4.pt", "checkpoints/expert_M5.pt"]  # group 1
+  #   - ["checkpoints/pretrained/expert_M1.pt",
+  #      "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt",
+  #      "checkpoints/pretrained/expert_M4.pt",
+  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 0 (vowels)
+  #   - ["checkpoints/pretrained/expert_M1.pt",
+  #      "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt",
+  #      "checkpoints/pretrained/expert_M4.pt",
+  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 1 (plosives)
   #   ... (repeat for all 8 groups)
+  #
+  # Example 3: Mixed (some shared, some from scratch)
+  # group_expert_pretrained_paths:
+  #   - ["M1.pt", "M2.pt", null, null, null]   # Group 0: 2 shared + 3 scratch
+  #   - [null, null, null, null, null]         # Group 1: all scratch
+  #
   group_expert_pretrained_paths: null
 
+  # -------------------- Expert Pooling Strategy --------------------
+  # How to combine outputs from multiple experts within a group
+  # - false: Mean pooling (simple average, no extra parameters)
+  # - true: Attention pooling (token-aware expert weighting)
+  use_attention_pooling: false
+  attn_heads: 4              # Number of attention heads (only if use_attention_pooling=true)
+  attn_dropout: 0.1          # Dropout on attention weights
+
+  # -------------------- Group Configurations --------------------
+  # Each group specializes in a specific acoustic class
+  # These can be overridden per group if needed
   group_configs:
     - group_id: 0
       group_name: "vowels"
@@ -80,45 +119,110 @@ model:
       dropout: 0.1
       specialization: "other"
 
-  vocab_size: 5000
-  decoder_hidden: 1024
-  decoder_layers: 2
-  blank_id: 0
+  # -------------------- Decoder (RNNT) --------------------
+  vocab_size: 5000             # Output token vocabulary size
+  decoder_hidden: 1024         # Decoder hidden dimension
+  decoder_layers: 2            # Number of LSTM layers in prediction network
+  blank_id: 0                  # Blank token ID for RNNT
 
-  competition_freq_steps: 1000
-  distillation_weight: 0.1
-  load_balance_weight: 0.01
-  z_loss_weight: 0.001
-  ctc_phone_weight: 0.3
+  # -------------------- Loss Weights --------------------
+  # Competition between experts (Natural Niches)
+  competition_freq_steps: 1000    # Run competition every N steps (0 = disabled)
 
-  sample_rate: 16000
-  n_mels: 80
-  hop_length: 256
-  win_length: 1024
+  # Multi-task loss weighting
+  distillation_weight: 0.1        # Weight for distillation loss
+  load_balance_weight: 0.01      # Weight for load balancing loss
+  z_loss_weight: 0.001           # Weight for z-loss regularization
+  ctc_phone_weight: 0.3          # Weight for phone CTC auxiliary task
 
-  alpha: 0.5
-  use_matchmaker: true
+  # -------------------- Audio Preprocessing --------------------
+  sample_rate: 16000            # Expected audio sample rate
+  n_mels: 80                    # Number of mel bands
+  hop_length: 256               # STFT hop length
+  win_length: 1024              # STFT window length
 
+  # -------------------- Other Options --------------------
+  alpha: 0.5                    # Matchmaker loss weight
+  use_matchmaker: true          # Enable matchmaker network
+
+# ============================================================================
+# DATA CONFIGURATION
+# ============================================================================
 data:
   manifests_dir: "datasets/processed_data_librispeech/manifests"
   train_manifest: "train.jsonl"
   valid_manifest: "validation.jsonl"
   test_manifest: "test.jsonl"
+
   sample_rate: 16000
   n_mels: 80
   hop_length: 256
   win_length: 1024
-  max_duration: 30.0
-  num_workers: 4
+  max_duration: 30.0           # Maximum audio duration in seconds
+  num_workers: 4               # DataLoader workers
 
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
 training:
-  num_epochs: 100
-  batch_size: 16
-  learning_rate: 0.001
-  warmup_steps: 50000
-  total_steps: 500000
-  output_dir: "checkpoints"
-  resume: false
+  num_epochs: 100              # Total training epochs
+  batch_size: 16               # Per-GPU batch size
+  learning_rate: 0.001         # Peak learning rate
+  warmup_steps: 50000          # Linear warmup steps
+  total_steps: 500000          # Total training steps (for scheduler)
+  output_dir: "checkpoints"    # Checkpoint save directory
+  resume: false                # Resume from checkpoint in output_dir
+
+  # Optimization
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  use_amp: true                # Mixed precision training
+  use_checkpoint: true         # Gradient checkpointing
+  use_compile: false           # torch.compile (requires PyTorch 2.0+)
+
+  # Evaluation & Logging
+  eval_every_n_steps: 1000     # Run validation every N steps
+  log_every_n_steps: 10        # Log metrics every N steps
+  save_every_n_steps: 10000    # Save checkpoint every N steps
+  keep_last_n_checkpoints: 5   # Number of recent checkpoints to keep
+
+  # Experiment tracking
   wandb_project: "TeaMoE"
-  wandb_entity: null
-  device: null  # auto-detect
+  wandb_entity: null           # Your W&B username/team
+  wandb_tags: []               # Additional tags for this run
+  wandb_notes: ""              # Additional notes
+
+  # Hardware
+  device: null                 # "cuda", "cpu", or null for auto-detect
+  seed: 42                     # Random seed for reproducibility
+
+# ============================================================================
+# NOTES
+# ============================================================================
+#
+# 1. To use shared pretrained experts:
+#    - Train M1-M5 first using train_pretrained_experts.py
+#    - Set group_expert_pretrained_paths to list of lists
+#    - Enable use_attention_pooling for better token-aware routing
+#
+# 2. Memory requirements (approximate, model_dim=1024):
+#    - Model parameters: ~200M
+#    - Activations (batch=16, seq=1000): ~8GB
+#    - Gradients: same as parameters
+#    - Total: ~40GB VRAM recommended (A100 40GB+ or multi-GPU)
+#
+# 3. For smaller GPUs (8-16GB), reduce:
+#    - model_dim: 512 or 256
+#    - num_layers: 12
+#    - batch_size: 4-8
+#    - Use gradient checkpointing (use_checkpoint: true)
+#
+# 4. To resume training:
+#    - Set resume: true
+#    - Ensure output_dir contains checkpoint.pt
+#
+# 5. For multi-GPU training, use torchrun:
+#    torchrun --nproc_per_node=8 train.py --config config/default.yaml
+#
+# ============================================================================

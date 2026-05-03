@@ -231,81 +231,45 @@ where Δᵛ ≠ Δᵖ because:
 
 ## 4. MoEConformerLayer Forward Pass (Step-by-Step)
 
-### 4.1 Input and Gating
+### 4.1 Shared Conformer Branches
+
+Same as before - Conv + Attention branches shared across all tokens.
+
+### 4.2 Expert Routing & Combination
 
 ```
-Input x: [B, S, 1024]
-group_ids: [B, S]  (from gating network)
+Token batch assigned to group g:
+  x_group: [N, D]  (N = number of tokens routed to this group)
 
-Example:
-  token "a" (vowel)    → group_ids[0,5] = 0 (Group 0)
-  token "p" (plosive)  → group_ids[0,6] = 1 (Group 1)
-```
+Each expert processes independently:
+  expert_0: h0 = M1(x_group)  → [N, D]
+  expert_1: h1 = M2(x_group)  → [N, D]
+  expert_2: h2 = M3(x_group)  → [N, D]
+  expert_3: h3 = M4(x_group)  → [N, D]
+  expert_4: h4 = M5(x_group)  → [N, D]
 
-### 4.2 Shared Conformer Branches
+Stacked: H = [h0, h1, h2, h3, h4]  → [N, 5, D]
 
-```python
-def forward(self, x, group_ids, deterministic=True):
-    residual = x
-
-    # 1. Convolution Branch (shared)
-    x = self.conv_norm(x)
-    x_conv = self.conv(x.permute(0,2,1)).permute(0,2,1)
-    x_conv = self.conv_gelu(x_conv)
-    x_conv = self.conv_dropout(x_conv)
-    x = x_conv + residual
-
-    # 2. Attention Branch (shared)
-    residual = x
-    x = self.attn_norm(x)
-    attn_out, _ = self.self_attn(x, x, x)
-    x = self.attn_dropout(attn_out)
-    x = x + residual
-
-    # x now contains shared representation [B, S, 1024]
-```
-
-### 4.3 Expert Routing
-
-```python
-    batch_size, seq_len, model_dim = x.shape
-    x_flat = x.reshape(-1, model_dim)      # [B×S, 1024]
-    group_ids_flat = group_ids.reshape(-1) # [B×S]
-
-    outputs = []
-    masks = []
-
-    # Process each expert group
-    for group_idx, expert_group in enumerate(self.expert_groups):
-        # Find tokens assigned to this group
-        mask = (group_ids_flat == group_idx)
-
-        if not mask.any():
-            continue
-
-        x_group = x_flat[mask]  # [N_group, 1024]
-
-        # Forward through the group's 5 experts
-        group_out = expert_group(x_group, deterministic, use_checkpoint)
-        # expert_group returns: mean([N, 5, 1024]) = [N, 1024]
-
-        outputs.append(group_out)
-        masks.append(mask)
-
-    # Scatter back to original positions
-    result = torch.zeros_like(x_flat)
-    for mask, out in zip(masks, outputs):
-        result[mask] = out
-
-    x_moe = result.reshape(batch_size, seq_len, model_dim)
-```
-
-### 4.4 Final Residual
-
-```python
-    x = self.moe_dropout(x_moe)
-    x = x + residual  # residual from shared branches
-    return x
+Combination Strategy (choose one):
+├─ Mean Pooling (default)
+│   combined = H.mean(dim=1)  → [N, D]
+│   Pros: Simple, no extra params
+│   Cons: Equal weight to all experts
+│
+└─ Attention Pooling (NEW)
+    Query: q = W_q(x_group)        → [N, D]
+    Key:   k = W_k(H)              → [N, 5, D]
+    Value: v = W_v(H)              → [N, 5, D]
+    
+    Multi-head attention:
+      scores = (q @ k.T) / √D       → [N, 5]
+      weights = softmax(scores)    → [N, 5]
+      context = weights @ v        → [N, D]
+    
+    Output: combined = LayerNorm(W_out(context) + x_group)
+    
+    Pros: Token-specific expert weighting
+    Cons: +10% parameters (~1M/group for D=1024)
 ```
 
 ## 5. Data Shapes Throughout Model
@@ -360,7 +324,25 @@ model:
     - ...  # Groups 2-7: all identical lists
 ```
 
-### 6.2 Legacy Format (Deprecated)
+### 6.2 Expert Pooling Strategy
+
+```yaml
+model:
+  # Mean pooling (default): simple average, no extra params
+  use_attention_pooling: false
+  
+  # OR Attention pooling: token-aware expert weighting
+  use_attention_pooling: true
+  attn_heads: 4              # Multi-head attention (default 4)
+  attn_dropout: 0.1          # Attention dropout (default 0.1)
+```
+
+**Parameter overhead** (for model_dim=1024, experts=5):
+- Mean pooling: 0 extra params
+- Attention pooling: ~1M params per group (query + key + value + out_proj)
+- Total overhead for 8 groups: ~8M (negligible vs 100M+ model)
+
+### 6.3 Legacy Format (Deprecated)
 
 ```yaml
 # OLD: one path per group (8 paths total)
@@ -579,6 +561,15 @@ Generates report with:
 | Specialization per group | high | very high | **medium-high** ⚖️ |
 | Initialization diversity | low (1 per group) | high (40 unique) | **medium** (5 unique) |
 | Parameter count (total) | same | same | **same** ⚠️ |
+
+### Pooling Strategy Comparison
+
+| Strategy | Extra Params | Token-aware | Cross-expert Selection | Complexity |
+|----------|--------------|-------------|------------------------|------------|
+| **Mean Pooling** | 0 | ❌ | Equal weights | Simple |
+| **Attention Pooling** | ~1M/group | ✅ | Learned per token | Moderate |
+
+**Recommendation**: Use `use_attention_pooling: true` for better performance, especially with shared pretrained experts where experts have different specializations.
 
 **Key insight**: Shared approach achieves **87.5% storage reduction** while maintaining cross-group knowledge transfer. The trade-off: slightly less initial diversity (5 vs 40) but gains from seeing all groups during pretraining.
 

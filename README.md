@@ -157,7 +157,7 @@ python train.py --config config/8gb.yaml --batch-size 4
 
 # Chi dinh cac tham so tuy chinh (ghi de config)
 python train.py \
-    --config config/8gb.yaml \
+    --config config/default_optimized.yaml \
     --num-epochs 50 \
     --batch-size 4 \
     --learning-rate 1e-3 \

@@ -1,0 +1,113 @@
+data:
+  hop_length: 256
+  manifests_dir: datasets/processed_data_librispeech/manifests
+  max_duration: 30.0
+  n_mels: 80
+  num_workers: 4
+  sample_rate: 16000
+  test_manifest: test.jsonl
+  train_manifest: train.jsonl
+  valid_manifest: validation.jsonl
+  win_length: 1024
+model:
+  alpha: 0.5
+  blank_id: 0
+  competition_freq_steps: 1000
+  conv_kernel_size: 31
+  ctc_phone_weight: 0.3
+  decoder_hidden: 768
+  decoder_layers: 2
+  distillation_weight: 0.1
+  experts_per_group: 4
+  ff_multiplier: 3
+  group_configs:
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 0
+    group_name: vowels
+    num_experts: 4
+    specialization: vowels
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 1
+    group_name: plosives
+    num_experts: 4
+    specialization: plosives
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 2
+    group_name: fricatives
+    num_experts: 4
+    specialization: fricatives
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 3
+    group_name: nasals
+    num_experts: 4
+    specialization: nasals
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 4
+    group_name: male_speakers
+    num_experts: 4
+    specialization: male
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 5
+    group_name: female_speakers
+    num_experts: 4
+    specialization: female
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 6
+    group_name: clean_audio
+    num_experts: 4
+    specialization: clean
+  - dropout: 0.1
+    expert_dim: 768
+    ff_multiplier: 3
+    group_id: 7
+    group_name: other_audio
+    num_experts: 4
+    specialization: other
+  hop_length: 256
+  load_balance_weight: 0.01
+  model_dim: 768
+  moe_end_layer: 12
+  moe_start_layer: 4
+  n_mels: 80
+  num_groups: 8
+  num_heads: 12
+  num_layers: 18
+  sample_rate: 16000
+  top_k_groups: 1
+  top_k_inference: 2
+  total_experts: 32
+  use_matchmaker: true
+  vocab_size: 5000
+  win_length: 1024
+  z_loss_weight: 0.001
+training:
+  batch_size: 4
+  checkpoint_every_n_layers: 1
+  device: null
+  gradient_accumulation_steps: 4
+  learning_rate: 0.001
+  max_grad_norm: 1.0
+  num_epochs: 50
+  output_dir: checkpoints
+  resume: false
+  total_steps: 500000
+  use_amp: true
+  use_checkpoint: true
+  use_compile: false
+  wandb_entity: null
+  wandb_project: TeaMoE
+  warmup_steps: 50000

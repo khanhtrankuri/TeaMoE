@@ -1,16 +1,16 @@
 # Memory-optimized config for smaller GPUs (e.g., 24GB with batch_size=4)
 model:
-  num_layers: 18  # Reduced from 24
-  moe_start_layer: 4  # Adjusted for fewer layers
+  num_layers: 18
+  moe_start_layer: 4
   moe_end_layer: 12
-  model_dim: 768  # Reduced from 1024
-  num_heads: 12  # Reduced from 16 (768/12 = 64 per head)
+  model_dim: 768
+  num_heads: 12          # 768 / 12 = 64 per head
   conv_kernel_size: 31
-  ff_multiplier: 3  # Reduced from 4 (768 -> 2304 -> 768)
+  ff_multiplier: 3       # 768 -> 2304 -> 768
 
   num_groups: 8
-  experts_per_group: 4  # Reduced from 5
-  total_experts: 32  # Reduced from 40
+  experts_per_group: 4
+  total_experts: 32
   top_k_groups: 1
   top_k_inference: 2
 
@@ -31,7 +31,7 @@ model:
       specialization: "plosives"
     - group_id: 2
       group_name: "fricatives"
-      num_experts: 4
+      num_experts: 4          # BUG FIX: was "4training" (string) → 4 (int)
       expert_dim: 768
       ff_multiplier: 3
       dropout: 0.1
@@ -73,7 +73,7 @@ model:
       specialization: "other"
 
   vocab_size: 5000
-  decoder_hidden: 768  # Reduced from 1024
+  decoder_hidden: 768
   decoder_layers: 2
   blank_id: 0
 
@@ -101,22 +101,22 @@ data:
   hop_length: 256
   win_length: 1024
   max_duration: 30.0
-  num_workers: 4  # Increased from 0
+  num_workers: 4
 
 training:
   num_epochs: 50
-  batch_size: 4  # Your specified batch size
+  batch_size: 4
   learning_rate: 0.001
   warmup_steps: 50000
   total_steps: 500000
-  gradient_accumulation_steps: 4  # Effective batch size = 4 * 4 = 16
-  use_amp: true  # Mixed precision - critical for memory
-  use_checkpoint: true  # Gradient checkpointing - huge memory savings
-  checkpoint_every_n_layers: 1  # Checkpoint every layer
-  use_compile: false  # torch.compile disabled when using gradient checkpointing (incompatible)
-  max_grad_norm: 1.0  # Gradient clipping
+  gradient_accumulation_steps: 4   # effective batch = 4 * 4 = 16
+  use_amp: true
+  use_checkpoint: true
+  checkpoint_every_n_layers: 1
+  use_compile: false                # incompatible với gradient checkpointing
+  max_grad_norm: 1.0
   output_dir: "checkpoints"
   resume: false
   wandb_project: "TeaMoE"
   wandb_entity: null
-  device: null  # auto-detect
+  device: null                      # auto-detect

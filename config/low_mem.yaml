@@ -3,7 +3,7 @@ model:
   num_layers: 6
   moe_start_layer: 2
   moe_end_layer: 4
-  model_dim: 256
+  model_dim: 128
   num_heads: 4
   conv_kernel_size: 15
   ff_multiplier: 2
@@ -18,20 +18,20 @@ model:
     - group_id: 0
       group_name: "vowels"
       num_experts: 2
-      expert_dim: 256
+      expert_dim: 128
       ff_multiplier: 2
       dropout: 0.1
       specialization: "vowels"
     - group_id: 1
       group_name: "consonants"
       num_experts: 2
-      expert_dim: 256
+      expert_dim: 128
       ff_multiplier: 2
       dropout: 0.1
       specialization: "consonants"
 
   vocab_size: 5000
-  decoder_hidden: 256
+  decoder_hidden: 128
   decoder_layers: 1
   blank_id: 0
 
@@ -43,7 +43,7 @@ model:
 
   sample_rate: 16000
   n_mels: 80
-  hop_length: 256
+  hop_length: 128
   win_length: 1024
 
   alpha: 0.5
@@ -56,7 +56,7 @@ data:
   test_manifest: "test.jsonl"
   sample_rate: 16000
   n_mels: 80
-  hop_length: 256
+  hop_length: 128
   win_length: 1024
   max_duration: 30.0
   num_workers: 0

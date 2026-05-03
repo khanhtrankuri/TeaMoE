@@ -215,7 +215,7 @@ def train_step(model, optimizer, scaler, batch, rng_key=None, gradient_accumulat
 
     # Use mixed precision if scaler is provided
     if scaler is not None:
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             rnnt_logits, aux_outputs = model(
                 audio_features, targets, phone_targets,
                 deterministic=False, use_checkpoint=use_checkpoint
@@ -430,17 +430,23 @@ def main():
 
     model = TeaMoEModel(config=model_cfg).to(device)
 
-    # Use torch.compile if available (PyTorch 2.0+) - additional memory savings
-    use_compile = train_cfg.get('use_compile', False)
-    if use_compile and hasattr(torch, 'compile'):
-        print("Applying torch.compile() for memory optimization...")
-        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
-
-    competition = NaturalNichesCompetition(model_cfg)
+    # Initialize optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
 
+    # Use torch.compile if available (PyTorch 2.0+) - but disable if using gradient checkpointing
+    # as they are incompatible due to data-dependent branching in checkpoint
+    use_compile = train_cfg.get('use_compile', False)
+    use_checkpoint = train_cfg.get('use_checkpoint', True)
+    if use_compile and hasattr(torch, 'compile') and not use_checkpoint:
+        print("Applying torch.compile() for memory optimization...")
+        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+    elif use_compile and use_checkpoint:
+        print("Warning: torch.compile disabled when using gradient checkpointing (incompatible)")
+
+    competition = NaturalNichesCompetition(model_cfg)
+
     # Initialize mixed precision scaler
-    scaler = torch.cuda.amp.GradScaler() if use_amp and device_str == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if use_amp and device_str == 'cuda' else None
 
     # Learning rate scheduler with warmup
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -462,87 +468,6 @@ def main():
     print(f"Model config: {model_cfg}")
     print(f"Train dataset: {len(train_dataset)} samples")
     print(f"Valid dataset: {len(valid_dataset)} samples")
-
-    for epoch in range(start_epoch, num_epochs):
-        print(f"\n=== Epoch {epoch + 1}/{num_epochs} ===")
-
-        # Training
-        model.train()
-        epoch_loss = 0.0
-        step_count = 0
-        accumulation_steps = 0
-
-        pbar = tqdm(train_loader, desc="Training")
-        for batch in pbar:
-            batch = tuple(b.to(device) if isinstance(b, torch.Tensor) else b for b in batch)
-
-            model, metrics, accumulation_complete = train_step(
-                model, optimizer, scaler, batch,
-                gradient_accumulation_steps=gradient_accumulation_steps,
-                use_checkpoint=use_checkpoint
-            )
-
-            # Track progress for gradient accumulation
-            accumulation_steps += 1
-
-            # Only update gradients at accumulation boundary
-            if accumulation_steps >= gradient_accumulation_steps:
-                if scaler is not None:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                    optimizer.step()
-
-                optimizer.zero_grad()
-                accumulation_steps = 0
-                scheduler.step()
-
-            step_count += 1
-            epoch_loss += metrics['loss']
-            pbar.set_postfix({'loss': metrics['loss']})
-
-            # Clear CUDA cache periodically to reduce fragmentation
-            if step_count % 100 == 0 and device_str == 'cuda':
-                torch.cuda.empty_cache()
-
-        avg_loss = epoch_loss / max(step_count, 1)
-
-        # Log training metrics
-        wandb_log = {
-            "epoch": epoch + 1,
-            "train/avg_loss": avg_loss,
-        }
-
-        print(f"Epoch {epoch + 1} avg loss: {avg_loss:.4f}")
-
-        # Evaluation
-        print("Evaluating...")
-        eval_metrics = evaluate(model, valid_loader, device, use_checkpoint=use_checkpoint)
-        print("Evaluation results:")
-        for key, val in eval_metrics.items():
-            print(f"  {key}: {val:.4f}")
-            wandb_log[f"eval/{key.lower()}"] = val
-
-        if use_wandb:
-            wandb.log(wandb_log, step=epoch + 1)
-
-        # Save checkpoint
-        if (epoch + 1) % 10 == 0 or epoch == num_epochs - 1:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-            }, output_dir / "checkpoint.pt")
-            print(f"Checkpoint saved to {output_dir}")
-
-    if use_wandb:
-        wandb.finish()
-    print("\nTraining completed!")
-    print(f"Final checkpoints saved to: {output_dir}")
 
 
 if __name__ == "__main__":

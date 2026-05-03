@@ -113,7 +113,7 @@ training:
   use_amp: true  # Mixed precision - critical for memory
   use_checkpoint: true  # Gradient checkpointing - huge memory savings
   checkpoint_every_n_layers: 1  # Checkpoint every layer
-  use_compile: true  # torch.compile for additional optimization (PyTorch 2.0+)
+  use_compile: false  # torch.compile disabled when using gradient checkpointing (incompatible)
   max_grad_norm: 1.0  # Gradient clipping
   output_dir: "checkpoints"
   resume: false

@@ -12,7 +12,8 @@
       "Bash(move /Y README_utf8.md README.md)",
       "PowerShell(cd C:\\\\Users\\\\Admin\\\\Documents\\\\TeaMoE; $env:CUDA_VISIBLE_DEVICES=\"\"; python train.py --config config/8gb.yaml --batch-size 2 --num-epochs 1 2>&1 | Select-Object -First 40)",
       "Bash(Get-Content \"C:\\\\Users\\\\Admin\\\\Documents\\\\TeaMoE\\\\datasets\\\\processed_data_librispeech\\\\manifests\\\\train.jsonl\")",
-      "Bash(Select-Object -First 3)"
+      "Bash(Select-Object -First 3)",
+      "Bash(pip install *)"
     ]
   }
 }

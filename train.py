@@ -19,7 +19,6 @@ import yaml
 import librosa
 from model.tea_moe import TeaMoEModel
 from model.competition import NaturalNichesCompetition
-from model.distillation import ExpertDistillation
 from model.losses import CombinedLoss
 
 # Set CUDA allocation config to reduce fragmentation
@@ -206,101 +205,138 @@ def greedy_decode_rnnt(logits: torch.Tensor, blank_id: int = 0) -> List[int]:
 
 # ==================== Training Step ====================
 
-def train_step(model, optimizer, scaler, batch, rng_key=None, gradient_accumulation_steps=1, use_checkpoint=False):
-    """Single training step with optional gradient accumulation and mixed precision
+def train_step(model, batch, device, use_checkpoint=False):
+    """Single training step (without optimizer step for gradient accumulation)
 
-    Returns: model, metrics_dict, should_step (bool - True when accumulation boundary reached)
+    Returns: total_loss, loss_dict
     """
     audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
+    audio_features = audio_features.to(device)
+    targets = targets.to(device)
+    phone_targets = phone_targets.to(device)
+    input_lengths = input_lengths.to(device)
+    target_lengths = target_lengths.to(device)
+    phone_lengths = phone_lengths.to(device)
 
-    # Use mixed precision if scaler is provided
-    if scaler is not None:
-        with torch.amp.autocast('cuda'):
-            rnnt_logits, aux_outputs = model(
-                audio_features, targets, phone_targets,
-                deterministic=False, use_checkpoint=use_checkpoint
-            )
+    rnnt_logits, aux_outputs = model(
+        audio_features, targets, phone_targets,
+        deterministic=False, use_checkpoint=use_checkpoint
+    )
 
-            group_probs = aux_outputs.get('group_probs')
-            group_ids = aux_outputs.get('group_ids')
-            phone_logits = aux_outputs.get('phone_logits')
+    group_probs = aux_outputs.get('group_probs')
+    group_ids = aux_outputs.get('group_ids')
+    phone_logits = aux_outputs.get('phone_logits')
+    group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
 
-            group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+    # Distillation loss placeholder
+    distillation_loss = torch.tensor(0.0, device=audio_features.device)
 
-            # Distillation loss placeholder
-            distillation_loss = torch.tensor(0.0, device=audio_features.device)
+    total_loss, loss_dict = model.compute_loss(
+        rnnt_logits=rnnt_logits,
+        targets=targets,
+        input_lengths=input_lengths,
+        target_lengths=target_lengths,
+        group_probs=group_probs,
+        group_ids=group_ids,
+        group_logits=group_logits,
+        distillation_loss=distillation_loss,
+        phone_logits=phone_logits,
+        phone_targets=phone_targets,
+        phone_lengths=phone_lengths
+    )
 
-            total_loss, loss_dict = model.compute_loss(
-                rnnt_logits=rnnt_logits,
-                targets=targets,
-                input_lengths=input_lengths,
-                target_lengths=target_lengths,
-                group_probs=group_probs,
-                group_ids=group_ids,
-                group_logits=group_logits,
-                distillation_loss=distillation_loss,
-                phone_logits=phone_logits,
-                phone_targets=phone_targets,
-                phone_lengths=phone_lengths
-            )
-
-            # Scale loss for gradient accumulation
-            if gradient_accumulation_steps > 1:
-                total_loss = total_loss / gradient_accumulation_steps
-
-        scaler.scale(total_loss).backward()
-    else:
-        rnnt_logits, aux_outputs = model(
-            audio_features, targets, phone_targets,
-            deterministic=False, use_checkpoint=use_checkpoint
-        )
-
-        group_probs = aux_outputs.get('group_probs')
-        group_ids = aux_outputs.get('group_ids')
-        phone_logits = aux_outputs.get('phone_logits')
-
-        group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
-
-        # Distillation loss placeholder
-        distillation_loss = torch.tensor(0.0, device=audio_features.device)
-
-        total_loss, loss_dict = model.compute_loss(
-            rnnt_logits=rnnt_logits,
-            targets=targets,
-            input_lengths=input_lengths,
-            target_lengths=target_lengths,
-            group_probs=group_probs,
-            group_ids=group_ids,
-            group_logits=group_logits,
-            distillation_loss=distillation_loss,
-            phone_logits=phone_logits,
-            phone_targets=phone_targets,
-            phone_lengths=phone_lengths
-        )
-
-        # Scale loss for gradient accumulation
-        if gradient_accumulation_steps > 1:
-            total_loss = total_loss / gradient_accumulation_steps
-
-        total_loss.backward()
-
-    # Return whether this is the accumulation boundary
-    return model, {'loss': loss_dict['total'].item() if isinstance(loss_dict, dict) else loss_dict.item()}, gradient_accumulation_steps == 1
+    return total_loss, loss_dict
 
 
 # ==================== Competition Step ====================
 
-def run_competition(model, competition, rng_key=None):
-    """Run natural niches competition to evolve experts"""
-    expert_weights = [p.clone() for p in model.parameters()]
+def build_expert_archive(model):
+    """Build archive of all expert weights from the model"""
+    archive = []
+    for group in model.encoder.expert_groups:
+        for i in range(group.config['num_experts']):
+            expert = group.get_expert(i)
+            archive.append({k: v.clone() for k, v in expert.state_dict().items()})
+    return archive
 
-    num_datapoints = 100
-    scores = torch.randn(competition.num_experts, num_datapoints)
 
-    for group_id in range(competition.num_groups):
-        parent_1_idx, parent_2_idx = competition.sample_parents(
-            expert_weights, scores, rng_key, group_id
+def apply_archive_to_model(model, archive):
+    """Apply updated expert weights from archive back to the model"""
+    idx = 0
+    for group in model.encoder.expert_groups:
+        for i in range(group.config['num_experts']):
+            expert = group.get_expert(i)
+            expert.load_state_dict(archive[idx])
+            idx += 1
+
+
+def compute_expert_scores(model, batch, device, num_samples=100):
+    """Compute fitness scores for each expert on a batch of data"""
+    model.eval()
+    with torch.no_grad():
+        audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
+        audio_features = audio_features[:num_samples].to(device)
+        input_lengths = input_lengths[:num_samples].to(device)
+
+        # Get encoder outputs and group assignments
+        x = model.input_proj(audio_features)
+        group_probs, group_ids = model.gating(x, deterministic=True)
+        encoder_out = model.encoder(x, group_ids=group_ids, deterministic=True)
+
+        # Compute scores based on group assignments
+        batch_size, seq_len, model_dim = encoder_out.shape
+        group_ids_flat = group_ids.reshape(-1)
+
+        # Base score: how much each group was used
+        base_scores = torch.zeros(
+            model.config['num_groups'],
+            device=device
         )
+        for g in range(model.config['num_groups']):
+            mask = (group_ids_flat == g)
+            base_scores[g] = mask.float().sum()
+
+        # Distribute to experts with small random variations
+        num_experts = model.config['num_groups'] * model.config['experts_per_group']
+        scores = torch.zeros(num_experts, device=device)
+        for group_idx in range(model.config['num_groups']):
+            base_score = base_scores[group_idx]
+            start_idx = group_idx * model.config['experts_per_group']
+            # Add small noise to differentiate experts
+            noise = torch.randn(model.config['experts_per_group'], device=device) * 0.01
+            scores[start_idx:start_idx + model.config['experts_per_group']] = base_score + noise
+
+    model.train()
+    return scores.unsqueeze(0).expand(num_samples, -1).t()  # (num_experts, num_samples)
+
+
+def run_competition(model, competition, dataloader, device, num_batches=1):
+    """Run natural niches competition to evolve experts"""
+    # Build initial archive
+    archive = build_expert_archive(model)
+
+    # Collect scores from a few batches
+    all_scores = []
+    data_iter = iter(dataloader)
+    for _ in range(num_batches):
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            break
+        scores = compute_expert_scores(model, batch, device)
+        all_scores.append(scores)
+
+    if not all_scores:
+        return model
+
+    # Average scores across batches
+    scores = torch.stack(all_scores, dim=0).mean(dim=0)  # (num_experts, num_datapoints)
+
+    # Run competition step
+    new_archive = competition.run_competition_step(archive, scores, model)
+
+    # Apply updated weights
+    apply_archive_to_model(model, new_archive)
 
     return model
 
@@ -448,12 +484,16 @@ def main():
     # Initialize mixed precision scaler
     scaler = torch.amp.GradScaler('cuda') if use_amp and device_str == 'cuda' else None
 
-    # Learning rate scheduler with warmup
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda step: min(step / warmup_steps, 1.0) * 0.5 * (1 + math.cos(math.pi * min(step, total_steps) / total_steps)) + 1e-5 / learning_rate
-        if step < total_steps else 1e-5 / learning_rate
-    )
+    # Learning rate scheduler with warmup + cosine decay
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        if progress >= 1.0:
+            return 1e-5 / learning_rate
+        return 0.5 * (1 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     start_epoch = 0
     if args.resume and (output_dir / "checkpoint.pt").exists():
@@ -469,6 +509,173 @@ def main():
     print(f"Train dataset: {len(train_dataset)} samples")
     print(f"Valid dataset: {len(valid_dataset)} samples")
 
+    # Training tracking
+    global_step = 0
+    best_wer = float('inf')
+    accumulation_counter = 0
 
-if __name__ == "__main__":
-    main()
+    # Main training loop
+    for epoch in range(start_epoch, num_epochs):
+        model.train()
+        epoch_loss = 0.0
+        epoch_steps = 0
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        for batch_idx, batch in enumerate(pbar):
+            audio_features, targets, phone_targets, input_lengths, target_lengths, phone_lengths = batch
+            audio_features = audio_features.to(device)
+            targets = targets.to(device)
+            phone_targets = phone_targets.to(device)
+            input_lengths = input_lengths.to(device)
+            target_lengths = target_lengths.to(device)
+            phone_lengths = phone_lengths.to(device)
+
+            # Training step
+            if scaler is not None:
+                with torch.amp.autocast('cuda'):
+                    rnnt_logits, aux_outputs = model(
+                        audio_features, targets, phone_targets,
+                        deterministic=False, use_checkpoint=use_checkpoint
+                    )
+
+                    group_probs = aux_outputs.get('group_probs')
+                    group_ids = aux_outputs.get('group_ids')
+                    phone_logits = aux_outputs.get('phone_logits')
+                    group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+
+                    # Placeholder for distillation loss
+                    distillation_loss = torch.tensor(0.0, device=audio_features.device)
+
+                    total_loss, loss_dict = model.compute_loss(
+                        rnnt_logits=rnnt_logits,
+                        targets=targets,
+                        input_lengths=input_lengths,
+                        target_lengths=target_lengths,
+                        group_probs=group_probs,
+                        group_ids=group_ids,
+                        group_logits=group_logits,
+                        distillation_loss=distillation_loss,
+                        phone_logits=phone_logits,
+                        phone_targets=phone_targets,
+                        phone_lengths=phone_lengths
+                    )
+
+                    if gradient_accumulation_steps > 1:
+                        total_loss = total_loss / gradient_accumulation_steps
+
+                scaler.scale(total_loss).backward()
+            else:
+                rnnt_logits, aux_outputs = model(
+                    audio_features, targets, phone_targets,
+                    deterministic=False, use_checkpoint=use_checkpoint
+                )
+
+                group_probs = aux_outputs.get('group_probs')
+                group_ids = aux_outputs.get('group_ids')
+                phone_logits = aux_outputs.get('phone_logits')
+                group_logits = torch.log(group_probs + 1e-8) if group_probs is not None else None
+
+                distillation_loss = torch.tensor(0.0, device=audio_features.device)
+
+                total_loss, loss_dict = model.compute_loss(
+                    rnnt_logits=rnnt_logits,
+                    targets=targets,
+                    input_lengths=input_lengths,
+                    target_lengths=target_lengths,
+                    group_probs=group_probs,
+                    group_ids=group_ids,
+                    group_logits=group_logits,
+                    distillation_loss=distillation_loss,
+                    phone_logits=phone_logits,
+                    phone_targets=phone_targets,
+                    phone_lengths=phone_lengths
+                )
+
+                if gradient_accumulation_steps > 1:
+                    total_loss = total_loss / gradient_accumulation_steps
+
+                total_loss.backward()
+
+            accumulation_counter += 1
+
+            # Gradient accumulation step
+            if accumulation_counter >= gradient_accumulation_steps:
+                # Gradient clipping
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
+                # Optimizer step
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+
+                optimizer.zero_grad()
+                scheduler.step()
+                accumulation_counter = 0
+                global_step += 1
+
+                # Update metrics
+                current_loss = loss_dict['total'].item() if isinstance(loss_dict, dict) else loss_dict.item()
+                epoch_loss += current_loss
+                epoch_steps += 1
+                pbar.set_postfix({'loss': current_loss, 'lr': scheduler.get_last_lr()[0]})
+
+                # Log to WandB
+                if use_wandb and global_step % 10 == 0:
+                    wandb.log({
+                        'train/loss': current_loss,
+                        'train/lr': scheduler.get_last_lr()[0],
+                        'step': global_step
+                    }, step=global_step)
+
+            # Periodic evaluation
+            if global_step > 0 and global_step % train_cfg.get('eval_every_n_steps', 1000) == 0:
+                eval_metrics = evaluate(model, valid_loader, device=device, use_checkpoint=use_checkpoint)
+                eval_wer = eval_metrics['WER']
+                pbar.write(f"Step {global_step}: WER = {eval_wer:.2%}")
+
+                if use_wandb:
+                    wandb.log({'eval/wer': eval_wer}, step=global_step)
+
+                # Save best model
+                if eval_wer < best_wer:
+                    best_wer = eval_wer
+                    torch.save({
+                        'epoch': epoch,
+                        'global_step': global_step,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'best_wer': best_wer,
+                        'config': model_cfg,
+                    }, output_dir / "best_model.pt")
+                    pbar.write(f"New best model saved (WER: {best_wer:.2%})")
+
+                # Periodic competition
+                if train_cfg.get('competition_every_n_steps', 0) > 0 and global_step % train_cfg.get('competition_every_n_steps', 5000) == 0:
+                    pbar.write("Running expert competition...")
+                    model = run_competition(model, competition, train_loader, device, num_batches=2)
+                    pbar.write("Competition completed")
+
+        # Epoch end
+        avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
+        print(f"Epoch {epoch+1} completed. Average loss: {avg_epoch_loss:.4f}")
+
+        # Save checkpoint at end of epoch
+        torch.save({
+            'epoch': epoch,
+            'global_step': global_step,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_wer': best_wer,
+            'config': model_cfg,
+        }, output_dir / "checkpoint.pt")
+
+    print(f"Training completed! Best WER: {best_wer:.2%}")
+
+    if use_wandb:
+        wandb.finish()

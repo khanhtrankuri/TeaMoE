@@ -66,7 +66,7 @@ def main():
     with open(output_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
-    print(f"\n✓ Config generated: {output_path}")
+    print(f"\n[OK] Config generated: {output_path}")
     print(f"\nTo train with this config:")
     print(f"  python train.py --config {output_path} --output-dir checkpoints/finetuned_shared")
     print(f"\nTo track specialization during training:")

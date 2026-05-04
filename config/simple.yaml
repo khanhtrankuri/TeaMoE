@@ -1,0 +1,248 @@
+# ============================================================================
+# TeaMoE Simple Configuration
+# For beginners: Start here before scaling up
+# VRAM requirement: ~8-12GB with gradient checkpointing
+# ============================================================================
+
+model:
+  # -------------------- Encoder Backbone --------------------
+  # Reduced size for faster training and lower VRAM
+  num_layers: 12                 # Total layers (start with 12)
+  moe_start_layer: 4            # MoE starts at layer 4
+  moe_end_layer: 10             # MoE ends at layer 10
+  model_dim: 512                # Hidden dimension (512 for 8GB VRAM)
+  num_heads: 8                  # Attention heads (match model_dim)
+  conv_kernel_size: 31
+  ff_multiplier: 4
+
+  # -------------------- MoE Configuration --------------------
+  num_groups: 4                 # Start with 4 groups instead of 8
+  experts_per_group: 4          # 4 experts per group
+  total_experts: 16             # 4 × 4 = 16 experts
+  top_k_groups: 1
+  top_k_inference: 2
+
+  # -------------------- Shared Pretrained Experts --------------------
+  # Set to null to train from scratch, or provide paths after pretraining
+  group_expert_pretrained_paths: null
+
+  # -------------------- Expert Pooling Strategy --------------------
+  use_attention_pooling: false  # Start with mean pooling (simpler)
+  attn_heads: 4
+  attn_dropout: 0.1
+
+  # -------------------- Group Configurations --------------------
+  # With 4 groups, only define 4 group configs
+  group_configs:
+    - group_id: 0
+      group_name: "group_0"
+      num_experts: 4
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "general"
+    - group_id: 1
+      group_name: "group_1"
+      num_experts: 4
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "general"
+    - group_id: 2
+      group_name: "group_2"
+      num_experts: 4
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "general"
+    - group_id: 3
+      group_name: "group_3"
+      num_experts: 4
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "general"
+
+  # -------------------- Decoder (RNNT) --------------------
+  vocab_size: 1000              # Smaller vocab for simpler start
+  decoder_hidden: 512           # Match model_dim
+  decoder_layers: 2
+  blank_id: 0
+
+  # -------------------- Auxiliary Phone Head --------------------
+  num_phones: 128               # Smaller phone set
+  phone_blank_id: 0
+
+  # -------------------- Loss Weights --------------------
+  competition_freq_steps: 0     # Disable competition initially
+  distillation_weight: 0.0      # No distillation
+  load_balance_weight: 0.01
+  z_loss_weight: 0.001
+  ctc_phone_weight: 0.0        # Disable phone CTC initially
+
+  # -------------------- Audio Preprocessing --------------------
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+
+  # -------------------- Regularization --------------------
+  dropout: 0.1
+  attention_dropout: 0.1
+  conv_dropout: 0.1
+
+  # -------------------- Other Options --------------------
+  alpha: 0.5
+  use_matchmaker: false         # Disable matchmaker initially
+  norm_after_moe: true
+
+# ----------------------------------------------------------------------------
+# DATA CONFIGURATION
+# ----------------------------------------------------------------------------
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+  max_duration: 30.0
+  min_duration: 0.1
+  num_workers: 2               # Reduce workers for smaller systems
+  prefetch_factor: 2
+  pin_memory: true
+  persistent_workers: false
+
+# ----------------------------------------------------------------------------
+# TRAINING CONFIGURATION
+# ----------------------------------------------------------------------------
+training:
+  num_epochs: 20               # Start with fewer epochs to test
+  batch_size: 8                # Smaller batch for 8GB VRAM
+  learning_rate: 1e-3          # Higher LR for smaller model
+  warmup_steps: 2000           # Shorter warmup
+  total_steps: 50000           # Fewer total steps
+
+  gradient_accumulation_steps: 2  # Accumulate to effective batch=16
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  optimizer: "adamw"
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+
+  use_amp: true                # Use mixed precision
+  use_checkpoint: true         # Use gradient checkpointing (CRITICAL for memory)
+  use_compile: false           # torch.compile can be buggy, disable initially
+
+  eval_every_n_steps: 500      # Evaluate more frequently
+  log_every_n_steps: 10
+  save_every_n_steps: 2000
+  keep_last_n_checkpoints: 3
+  keep_best_checkpoints: 2
+
+  early_stopping_patience: 5   # Stop early if no improvement
+  early_stopping_metric: "wer"
+
+  wandb_project: "TeaMoE-simple"
+  wandb_entity: null
+  wandb_tags: ["simple", "debug"]
+  wandb_mode: "online"
+  log_to_console: true
+
+  device: null
+  seed: 42
+  deterministic: false
+
+# ----------------------------------------------------------------------------
+# INFERENCE CONFIGURATION
+# ----------------------------------------------------------------------------
+inference:
+  decoder_type: "greedy"
+  beam_size: 5
+  beam_alpha: 0.6
+  beam_beta: 0.0
+  rnnt_blank_id: 0
+  rnnt_max_symbols_per_step: 10
+  apply_lm: false
+  lm_weight: 0.5
+  am_weight: 0.5
+  return_timestamps: false
+  return_token_timestamps: false
+
+# ----------------------------------------------------------------------------
+# COMPETITION CONFIGURATION
+# ----------------------------------------------------------------------------
+competition:
+  enabled: false               # Disable initially, enable after basic training works
+  frequency_steps: 2000
+  num_batches: 2
+  alpha: 0.5
+  use_matchmaker: false
+  mutation_rate: 0.01
+  elite_count: 1
+
+# ----------------------------------------------------------------------------
+# LOGGING & METRICS
+# ----------------------------------------------------------------------------
+logging:
+  log_train_loss: true
+  log_val_metrics: true
+  log_gradient_norm: true
+  log_expert_usage: true
+  log_specialization: false    # Only if using pretrained experts
+  log_learning_rate: true
+
+  compute_wer: true
+  compute_per: true
+  compute_gini: true
+  compute_expert_diversity: true
+  compute_specialization: false
+
+  plot_expert_usage: true
+  plot_group_distribution: true
+  plot_specialization_trend: false
+
+# ----------------------------------------------------------------------------
+# CHECKPOINTING
+# ----------------------------------------------------------------------------
+checkpoint:
+  save_dir: "checkpoints/simple"
+  save_optimizer: true
+  save_scheduler: true
+  save_rng_state: true
+  save_best_only: false
+  best_metric: "wer"
+  mode: "min"
+  resume_from_checkpoint: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  strict: true
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. First, prepare your data:
+#    python load_dataset/process_libri.py
+#
+# 2. Train the simple model:
+#    python train.py --config config/simple.yaml --output-dir checkpoints/simple_run
+#
+# 3. Monitor training in WandB or console
+#
+# 4. Once basic training works, gradually increase complexity:
+#    - Increase model_dim: 512 → 768 → 1024
+#    - Increase num_layers: 12 → 18 → 24
+#    - Increase num_groups: 4 → 8
+#    - Add more experts: 4 → 5
+#    - Enable attention pooling
+#    - Add competition
+#    - Use pretrained experts
+#
+# 5. For production, use config/complete.yaml as reference
+#
+# ============================================================================

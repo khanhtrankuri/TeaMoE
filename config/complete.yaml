@@ -1,0 +1,403 @@
+# ============================================================================
+# TeaMoE Complete Configuration
+# MoE-Conformer + RNN-T with Shared Pretrained Experts
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# MODEL ARCHITECTURE
+# ----------------------------------------------------------------------------
+model:
+  # -------------------- Encoder Backbone --------------------
+  # Conformer encoder configuration
+  num_layers: 24                 # Total transformer layers (default: 24)
+  moe_start_layer: 6            # First layer with MoE (0-indexed, default: 6)
+  moe_end_layer: 18             # Last layer with MoE (exclusive, default: 18)
+  model_dim: 1024               # Hidden dimension throughout model (default: 1024)
+  num_heads: 16                 # Multi-head attention heads (default: 16)
+  conv_kernel_size: 31          # Depthwise conv kernel (must be odd, default: 31)
+  ff_multiplier: 4              # FFN expansion factor (expert_dim = model_dim * ff_multiplier, default: 4)
+
+  # -------------------- MoE Configuration --------------------
+  num_groups: 8                 # Number of acoustic groups (vowels, plosives, fricatives, nasals, male, female, clean, other)
+  experts_per_group: 5          # Number of experts per group
+  total_experts: 40             # num_groups × experts_per_group (auto-calculated)
+  top_k_groups: 1               # Route to top-k groups during training (default: 1)
+  top_k_inference: 2           # Route to top-k groups during inference (default: 2)
+
+  # -------------------- Shared Pretrained Experts --------------------
+  # Format: List[List[str]] - one inner list per group, each with paths for each expert
+  # Use 'null' for experts to train from scratch.
+  #
+  # Example 1: No pretrained (train from scratch)
+  # group_expert_pretrained_paths: null
+  #
+  # Example 2: Shared pretrained models (5 models shared across all 8 groups)
+  # group_expert_pretrained_paths:
+  #   - ["checkpoints/pretrained/expert_M1.pt",
+  #      "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt",
+  #      "checkpoints/pretrained/expert_M4.pt",
+  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 0 (vowels)
+  #   - ["checkpoints/pretrained/expert_M1.pt",
+  #      "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt",
+  #      "checkpoints/pretrained/expert_M4.pt",
+  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 1 (plosives)
+  #   ... (repeat for all 8 groups)
+  #
+  # Example 3: Mixed (some shared, some from scratch)
+  # group_expert_pretrained_paths:
+  #   - ["M1.pt", "M2.pt", null, null, null]   # Group 0: 2 shared + 3 scratch
+  #   - [null, null, null, null, null]         # Group 1: all scratch
+  #
+  group_expert_pretrained_paths: null
+
+  # -------------------- Expert Pooling Strategy --------------------
+  # How to combine outputs from multiple experts within a group
+  # - false: Mean pooling (simple average, no extra parameters)
+  # - true: Attention pooling (token-aware expert weighting)
+  use_attention_pooling: false
+  attn_heads: 4              # Number of attention heads (only if use_attention_pooling=true, default: 4)
+  attn_dropout: 0.1          # Dropout on attention weights (default: 0.1)
+
+  # -------------------- Group Configurations --------------------
+  # Each group specializes in a specific acoustic class
+  # These can be overridden per group if needed
+  group_configs:
+    - group_id: 0
+      group_name: "vowels"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "vowels"
+    - group_id: 1
+      group_name: "plosives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "plosives"
+    - group_id: 2
+      group_name: "fricatives"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "fricatives"
+    - group_id: 3
+      group_name: "nasals"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "nasals"
+    - group_id: 4
+      group_name: "male_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "male"
+    - group_id: 5
+      group_name: "female_speakers"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "female"
+    - group_id: 6
+      group_name: "clean_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "clean"
+    - group_id: 7
+      group_name: "other_audio"
+      num_experts: 5
+      expert_dim: 1024
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "other"
+
+  # -------------------- Decoder (RNNT) --------------------
+  vocab_size: 5000             # Output token vocabulary size (default: 5000)
+  decoder_hidden: 1024         # Decoder hidden dimension (default: 1024)
+  decoder_layers: 2            # Number of LSTM layers in prediction network (default: 2)
+  blank_id: 0                  # Blank token ID for RNNT (default: 0)
+
+  # -------------------- Auxiliary Phone Head --------------------
+  num_phones: 256              # Number of phone labels for CTC auxiliary task (default: 256)
+  phone_blank_id: 0            # Blank token for phone CTC (default: 0)
+
+  # -------------------- Loss Weights --------------------
+  # Multi-task loss weighting (tune these for your dataset)
+  competition_freq_steps: 1000    # Run competition every N steps (0 = disabled, default: 1000)
+
+  # Loss component weights (sum to 1.0 ideally)
+  distillation_weight: 0.1        # Weight for distillation loss (default: 0.1)
+  load_balance_weight: 0.01      # Weight for load balancing loss (default: 0.01)
+  z_loss_weight: 0.001           # Weight for z-loss regularization (default: 0.001)
+  ctc_phone_weight: 0.3          # Weight for phone CTC auxiliary task (default: 0.3)
+
+  # -------------------- Audio Preprocessing --------------------
+  sample_rate: 16000            # Expected audio sample rate (default: 16000)
+  n_mels: 80                    # Number of mel bands (default: 80)
+  hop_length: 256               # STFT hop length (default: 256)
+  win_length: 1024              # STFT window length (default: 1024)
+
+  # -------------------- Regularization --------------------
+  dropout: 0.1                  # General dropout rate (default: 0.1)
+  attention_dropout: 0.1        # Attention dropout (default: 0.1)
+  conv_dropout: 0.1             # Convolution dropout (default: 0.1)
+
+  # -------------------- Other Options --------------------
+  alpha: 0.5                    # Matchmaker loss weight in competition (default: 0.5)
+  use_matchmaker: true          # Enable matchmaker in competition (default: true)
+  norm_after_moe: true          # Apply layer norm after MoE output (default: true)
+
+# ----------------------------------------------------------------------------
+# DATA CONFIGURATION
+# ----------------------------------------------------------------------------
+data:
+  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+  max_duration: 30.0           # Maximum audio duration in seconds (default: 30.0)
+  min_duration: 0.1            # Minimum audio duration (default: 0.1)
+  num_workers: 4               # DataLoader workers (default: 4)
+  prefetch_factor: 2           # Prefetch batches per worker (default: 2)
+  pin_memory: true             # Pin memory for GPU transfer (default: true)
+  persistent_workers: false    # Keep workers alive between epochs (default: false)
+
+  # Data augmentation (optional)
+  augmentation:
+    enabled: false
+    speed_perturbation: [0.9, 1.0, 1.1]  # Speed perturbation factors
+    spec_augment:
+      enabled: false
+      freq_mask_param: 20
+      time_mask_param: 50
+      num_masks: 2
+
+# ----------------------------------------------------------------------------
+# TRAINING CONFIGURATION
+# ----------------------------------------------------------------------------
+training:
+  num_epochs: 100              # Total training epochs (default: 100)
+  batch_size: 16               # Per-GPU batch size (default: 16)
+  learning_rate: 0.001         # Peak learning rate (default: 0.001)
+  warmup_steps: 50000          # Linear warmup steps (default: 50000)
+  total_steps: 500000          # Total training steps (for scheduler, default: 500000)
+
+  # Optimization
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  optimizer: "adamw"           # Options: adamw, adam, sgd
+  beta1: 0.9                   # Adam beta1 (default: 0.9)
+  beta2: 0.999                 # Adam beta2 (default: 0.999)
+  eps: 1e-8                    # Adam epsilon (default: 1e-8)
+
+  # Mixed precision & efficiency
+  use_amp: true                # Mixed precision training (default: true)
+  use_checkpoint: true         # Gradient checkpointing (default: true)
+  use_compile: false           # torch.compile (requires PyTorch 2.0+, default: false)
+
+  # Evaluation & Logging
+  eval_every_n_steps: 1000     # Run validation every N steps (default: 1000)
+  log_every_n_steps: 10        # Log metrics every N steps (default: 10)
+  save_every_n_steps: 10000    # Save checkpoint every N steps (default: 10000)
+  keep_last_n_checkpoints: 5   # Number of recent checkpoints to keep (default: 5)
+  keep_best_checkpoints: 3     # Number of best checkpoints to keep (default: 3)
+
+  # Early stopping
+  early_stopping_patience: 10  # Stop if no improvement after N evals (default: 10, 0=disabled)
+  early_stopping_metric: "wer" # Metric to monitor: wer, per, loss (default: wer)
+
+  # Experiment tracking
+  wandb_project: "TeaMoE"      # Weights & Biases project name
+  wandb_entity: null           # Your W&B username/team (null for default)
+  wandb_tags: []               # Additional tags for this run
+  wandb_notes: ""              # Additional notes
+  wandb_mode: "online"         # Options: online, offline, disabled
+  log_to_console: true         # Print metrics to console (default: true)
+
+  # Hardware
+  device: null                 # "cuda", "cpu", or null for auto-detect
+  seed: 42                     # Random seed for reproducibility (default: 42)
+  deterministic: false         # Enable deterministic mode (slower, default: false)
+
+# ----------------------------------------------------------------------------
+# DISTILLATION CONFIGURATION (for pretraining experts)
+# ----------------------------------------------------------------------------
+distillation:
+  # HuggingFace model distillation settings
+  hf_models:
+    - "facebook/mms-300m"
+    - "speechbrain/asr-conformersmall-transformerlm-librispeech"
+    - "facebook/hubert-large-ls960-ft"
+    - "facebook/wav2vec2-large-xlsr-53"
+    - "openai/whisper-large-v3"
+
+  # Distillation training
+  epochs: 5                    # Epochs per expert (default: 5)
+  batch_size: 32               # Batch size for distillation (default: 32)
+  learning_rate: 1e-3          # Learning rate for distillation (default: 1e-3)
+  num_workers: 4               # DataLoader workers (default: 4)
+
+  # Model dimensions
+  expert_dim: 1024             # Expert hidden dimension (must match model.model_dim)
+  n_mels: 80                   # Number of mel bins (must match model.n_mels)
+
+  # Loss
+  loss: "mse"                  # Reconstruction loss: mse, l1, huber
+
+# ----------------------------------------------------------------------------
+# INFERENCE CONFIGURATION
+# ----------------------------------------------------------------------------
+inference:
+  # Decoding
+  decoder_type: "greedy"       # Options: greedy, beam_search
+  beam_size: 5                 # Beam size for beam search (default: 5)
+  beam_alpha: 0.6              # Length penalty for beam search (default: 0.6)
+  beam_beta: 0.0               # Coverage penalty (default: 0.0)
+
+  # RNN-T specific
+  rnnt_blank_id: 0             # Blank token ID
+  rnnt_max_symbols_per_step: 10 # Max symbols per step for streaming (default: 10)
+
+  # Post-processing
+  apply_lm: false              # Apply language model (default: false)
+  lm_weight: 0.5               # LM weight if applying (default: 0.5)
+  am_weight: 0.5               # Acoustic model weight (default: 0.5)
+
+  # Output
+  return_timestamps: false     # Return word timestamps (default: false)
+  return_token_timestamps: false  # Return token timestamps (default: false)
+
+# ----------------------------------------------------------------------------
+# COMPETITION CONFIGURATION (Natural Niches)
+# ----------------------------------------------------------------------------
+competition:
+  enabled: true                # Enable competition during training
+  frequency_steps: 1000        # Run competition every N steps (default: 1000)
+  num_batches: 2               # Number of batches for fitness evaluation (default: 2)
+  alpha: 0.5                   # Fitness normalization exponent (default: 0.5)
+  use_matchmaker: true         # Use matchmaker selection (default: true)
+  mutation_rate: 0.01          # Mutation rate for offspring (default: 0.01)
+  elite_count: 1               # Number of elite experts to preserve (default: 1)
+
+# ----------------------------------------------------------------------------
+# LOGGING & METRICS
+# ----------------------------------------------------------------------------
+logging:
+  # What to log
+  log_train_loss: true
+  log_val_metrics: true
+  log_gradient_norm: true
+  log_expert_usage: true
+  log_specialization: true     # Requires group_expert_pretrained_paths set
+  log_learning_rate: true
+
+  # Metrics to compute during evaluation
+  compute_wer: true            # Word Error Rate
+  compute_per: true            # Phone Error Rate
+  compute_gini: true           # Expert load balancing (Gini coefficient)
+  compute_expert_diversity: true  # Cosine distance between experts
+  compute_specialization: true # Divergence from pretrained (requires pretrained paths)
+
+  # Visualization
+  plot_expert_usage: true      # Plot expert usage histogram
+  plot_group_distribution: true  # Plot group assignment distribution
+  plot_specialization_trend: true  # Plot specialization over time
+
+# ----------------------------------------------------------------------------
+# MULTI-GPU CONFIGURATION
+# ----------------------------------------------------------------------------
+distributed:
+  enabled: false               # Enable distributed training (default: false)
+  backend: "nccl"              # Backend: nccl, gloo (default: nccl)
+  init_method: "env://"        # Distributed init method (default: env://)
+  world_size: 1                # Total number of GPUs (set automatically)
+  rank: 0                      # Current GPU rank (set automatically)
+
+# ----------------------------------------------------------------------------
+# CHECKPOINTING
+# ----------------------------------------------------------------------------
+checkpoint:
+  save_dir: "checkpoints"      # Base checkpoint directory
+  save_optimizer: true         # Save optimizer state (default: true)
+  save_scheduler: true         # Save scheduler state (default: true)
+  save_rng_state: true         # Save RNG state for reproducibility (default: true)
+
+  # Best model tracking
+  save_best_only: false        # Save only best model (default: false)
+  best_metric: "wer"           # Metric for best model: wer, per, loss
+  mode: "min"                  # "min" for wer/per/loss, "max" for accuracy
+
+  # Loading
+  resume_from_checkpoint: null # Path to checkpoint to resume from (null = fresh start)
+  load_optimizer_state: true   # Load optimizer from checkpoint (default: true)
+  load_scheduler_state: true   # Load scheduler from checkpoint (default: true)
+  strict: true                 # Strict loading of model state dict (default: true)
+
+# ----------------------------------------------------------------------------
+# PROFILING & DEBUGGING
+# ----------------------------------------------------------------------------
+profiling:
+  enabled: false               # Enable profiling (default: false)
+  profile_memory: false        # Profile memory usage (default: false)
+  profile_forward: false       # Profile forward pass (default: false)
+  profile_backward: false      # Profile backward pass (default: false)
+
+  # Debug
+  check_nan: true              # Check for NaN in forward/backward (default: true)
+  check_inf: true              # Check for Inf in forward/backward (default: true)
+  log_grad_norm: false         # Log gradient norms per layer (default: false)
+  log_expert_weights: false    # Log expert weight statistics (default: false)
+
+# ----------------------------------------------------------------------------
+# NOTES
+# ----------------------------------------------------------------------------
+#
+# 1. To use shared pretrained experts:
+#    - Train M1-M5 first using train_pretrained_experts.py or distill_hf_to_experts.py
+#    - Set group_expert_pretrained_paths to list of lists (see examples above)
+#    - Enable use_attention_pooling for better token-aware routing
+#
+# 2. Memory requirements (approximate, model_dim=1024):
+#    - Model parameters: ~958M
+#    - Activations (batch=16, seq=1000): ~8GB
+#    - Gradients: same as parameters
+#    - Total: ~40GB VRAM recommended (A100 40GB+ or multi-GPU)
+#
+# 3. For smaller GPUs (8-16GB), reduce:
+#    - model_dim: 512 or 256
+#    - num_layers: 12
+#    - batch_size: 4-8
+#    - Use gradient checkpointing (use_checkpoint: true)
+#    - Use mixed precision (use_amp: true)
+#
+# 4. To resume training:
+#    - Set resume_from_checkpoint to checkpoint path
+#    - Ensure config matches the saved checkpoint config
+#
+# 5. For multi-GPU training:
+#    - Set distributed.enabled: true
+#    - Use torchrun: torchrun --nproc_per_node=8 train.py --config config.yaml
+#
+# 6. Tuning recommendations:
+#    - Start with small model (8gb.yaml) to verify pipeline
+#    - Gradually increase model_dim and num_layers
+#    - Adjust learning rate with linear scaling: LR_new = LR_base * (batch_new / batch_base)
+#    - Monitor specialization index to ensure experts are diverging
+#
+# ============================================================================

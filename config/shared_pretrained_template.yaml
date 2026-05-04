@@ -1,5 +1,10 @@
-# TeaMoE Configuration with Shared Pretrained Experts
-# Template: Replace CHECKPOINT_DIR with your pretrained experts directory
+# ============================================================================
+# TeaMoE Shared Pretrained Experts Template
+# Use this as base, then run: python generate_shared_config.py
+# ============================================================================
+
+# This file is a TEMPLATE. The actual shared config will be generated
+# by generate_shared_config.py which inserts your pretrained expert paths.
 
 model:
   # -------------------- Encoder Backbone --------------------
@@ -19,52 +24,16 @@ model:
   top_k_inference: 2
 
   # -------------------- Shared Pretrained Experts --------------------
-  # IMPORTANT: Replace "CHECKPOINT_DIR" with actual path to your pretrained experts
-  # All 8 groups share the same 5 pretrained models (M1-M5)
-  group_expert_pretrained_paths:
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 0 (vowels)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 1 (plosives)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 2 (fricatives)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 3 (nasals)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 4 (male_speakers)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 5 (female_speakers)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 6 (clean_audio)
-    - ["CHECKPOINT_DIR/expert_M1.pt",
-       "CHECKPOINT_DIR/expert_M2.pt",
-       "CHECKPOINT_DIR/expert_M3.pt",
-       "CHECKPOINT_DIR/expert_M4.pt",
-       "CHECKPOINT_DIR/expert_M5.pt"]  # Group 7 (other_audio)
+  # THIS WILL BE FILLED BY generate_shared_config.py
+  # Expected format after generation:
+  # group_expert_pretrained_paths:
+  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt", ...]  # Group 0
+  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt", ...]  # Group 1
+  #   ... (repeat for all 8 groups, all pointing to same 5 files)
+  group_expert_pretrained_paths: null  # Will be replaced
 
   # -------------------- Expert Pooling Strategy --------------------
-  # Recommended: true for shared pretrained experts
+  # RECOMMENDED: true for shared pretrained experts
   use_attention_pooling: true    # Token-aware expert weighting
   attn_heads: 4                  # Multi-head attention
   attn_dropout: 0.1              # Attention dropout
@@ -132,9 +101,11 @@ model:
   decoder_hidden: 1024
   decoder_layers: 2
   blank_id: 0
+  num_phones: 256
 
+  # Loss weights (fine-tuning from pretrained)
   competition_freq_steps: 1000
-  distillation_weight: 0.1
+  distillation_weight: 0.1        # Preserve pretrained knowledge
   load_balance_weight: 0.01
   z_loss_weight: 0.001
   ctc_phone_weight: 0.3
@@ -163,7 +134,7 @@ data:
   num_workers: 8
 
 # ============================================================================
-# TRAINING
+# TRAINING (Fine-tuning)
 # ============================================================================
 training:
   num_epochs: 50
@@ -203,6 +174,11 @@ training:
 #      --epochs 10 \
 #      --output-dir checkpoints/pretrained
 #
+#    OR distill from HuggingFace:
+#    python distill_hf_to_experts.py \
+#      --output-dir checkpoints/pretrained \
+#      --epochs 3
+#
 # 2. Generate this config automatically:
 #    python generate_shared_config.py \
 #      --pretrained-dir checkpoints/pretrained \
@@ -215,6 +191,6 @@ training:
 #
 # 4. Monitor specialization:
 #    - Check wandb for "specialization_index" metric
-#    - Run: python run_shared_pretrained_workflow.py --phase analyze
+#    - Specialization Index should increase from 0.0 → 0.4+
 #
 # ============================================================================

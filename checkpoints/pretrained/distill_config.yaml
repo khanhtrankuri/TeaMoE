@@ -1,0 +1,12 @@
+batch_size: 4
+epochs: 3
+expert_dim: 1024
+lr: 0.001
+model_names:
+- facebook/mms-300m
+- facebook/hubert-large-ls960-ft
+n_mels: 80
+num_workers: 4
+output_dir: checkpoints/pretrained
+train_manifest: datasets/processed_data_librispeech/manifests/train.jsonl
+valid_manifest: datasets/processed_data_librispeech/manifests/validation.jsonl

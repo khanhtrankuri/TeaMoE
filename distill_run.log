@@ -1,0 +1,5 @@
+C:\Users\Admin\miniconda3\Lib\site-packages\torch\cuda\__init__.py:61: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+[WARN] transformers not installed: cannot import name 'HubertProcessor' from 'transformers' (C:\Users\Admin\miniconda3\Lib\site-packages\transformers\__init__.py)
+  Install with: pip install transformers
+[ERROR] transformers library not installed. Please run: pip install transformers

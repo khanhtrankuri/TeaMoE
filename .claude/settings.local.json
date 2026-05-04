@@ -17,7 +17,9 @@
       "Bash(echo \"Exit code: $?\")",
       "Bash(/opt/conda/envs/teamoce/bin/python *)",
       "Bash(python test_expert_attention.py)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(tee distill_run.log)",
+      "Bash(taskkill /f /im python.exe)"
     ]
   }
 }

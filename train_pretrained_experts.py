@@ -21,6 +21,7 @@ from tqdm import tqdm
 import numpy as np
 from pathlib import Path
 import librosa
+import json
 
 from model.expert import Expert
 
@@ -47,9 +48,17 @@ class PretrainDataset(torch.utils.data.Dataset):
                 if record.get("duration_seconds", 0) > self.max_duration:
                     continue
                 if "audio_filepath" in record:
-                    record["audio_filepath"] = record["audio_filepath"].replace(
-                        "load_dataset", "datasets"
-                    )
+                    # Normalize path: relative to project root
+                    audio_path = record["audio_filepath"]
+                    if not os.path.isabs(audio_path):
+                        # If path starts with 'load_dataset', replace with 'datasets'
+                        if audio_path.startswith("load_dataset"):
+                            audio_path = audio_path.replace("load_dataset", "datasets", 1)
+                        # If path is relative, make it absolute relative to manifest dir
+                        if not os.path.exists(audio_path):
+                            manifest_dir = os.path.dirname(manifest_path)
+                            audio_path = os.path.normpath(os.path.join(manifest_dir, audio_path))
+                    record["audio_filepath"] = audio_path
                 self.records.append(record)
 
         print(f"Loaded {len(self.records)} records from {manifest_path}")
@@ -66,8 +75,10 @@ class PretrainDataset(torch.utils.data.Dataset):
             waveform, _ = librosa.load(audio_path, sr=self.sample_rate, mono=True)
         except Exception as e:
             print(f"[WARN] Error loading {audio_path}: {e}")
+            # Return zero waveform of reasonable length
             waveform = np.zeros(self.sample_rate, dtype=np.float32)
 
+        # Mel spectrogram [n_mels, time] -> [time, n_mels]
         mel = librosa.feature.melspectrogram(
             y=waveform,
             sr=self.sample_rate,
@@ -77,8 +88,9 @@ class PretrainDataset(torch.utils.data.Dataset):
         )
         mel = librosa.power_to_db(mel, ref=np.max)
         mel = (mel - mel.mean()) / (mel.std() + 1e-8)
-        mel = torch.from_numpy(mel).T.float()
+        mel = torch.from_numpy(mel).T.float()  # [T, n_mels]
 
+        # Text tokens (not used in pretraining but kept for compatibility)
         tokens = [ord(c) for c in text if ord(c) < 5000]
         tokens = tokens if tokens else [1]
         tokens = torch.tensor(tokens, dtype=torch.long)
@@ -117,15 +129,26 @@ def collate_fn_pretrain(batch):
 # ==================== Simple Pretrain Model ====================
 
 class PretrainModel(nn.Module):
-    """Simple autoencoder-style pretraining for expert."""
-    def __init__(self, expert_dim=1024, ff_multiplier=4, dropout=0.1):
-        super().__init__()
-        self.expert = Expert(expert_dim, ff_multiplier, dropout)
-        self.proj_out = nn.Linear(expert_dim, expert_dim)
+    """Autoencoder-style pretraining for expert.
 
-    def forward(self, x):
-        h = self.expert(x)
-        return self.proj_out(h)
+    Architecture:
+    mel -> InputProj -> Expert -> OutputProj -> mel_recon
+
+    This mimics the actual usage in TeaMoE where:
+    mel -> InputProj (in main model) -> Expert (our pretrained) -> Output
+    """
+    def __init__(self, n_mels=80, expert_dim=1024, ff_multiplier=4, dropout=0.1):
+        super().__init__()
+        self.input_proj = nn.Linear(n_mels, expert_dim)
+        self.expert = Expert(expert_dim, ff_multiplier, dropout)
+        self.output_proj = nn.Linear(expert_dim, n_mels)
+
+    def forward(self, mel):
+        # mel: [B, T, n_mels]
+        x = self.input_proj(mel)  # [B, T, expert_dim]
+        h = self.expert(x)        # [B, T, expert_dim]
+        recon = self.output_proj(h)  # [B, T, n_mels]
+        return recon, h
 
 
 # ==================== Training ====================
@@ -169,18 +192,21 @@ def train_pretrain_expert(
         pin_memory=True,
     )
 
-    # Model
+    # Model - includes input_proj and output_proj for reconstruction
+    n_mels = config.get("n_mels", 80)
+    model_dim = config.get("model_dim", 1024)
+    ff_multiplier = config.get("ff_multiplier", 4)
+    dropout = config.get("dropout", 0.1)
+
     model = PretrainModel(
-        expert_dim=config.get("model_dim", 1024),
-        ff_multiplier=config.get("ff_multiplier", 4),
-        dropout=0.1,
+        n_mels=n_mels,
+        expert_dim=model_dim,
+        ff_multiplier=ff_multiplier,
+        dropout=dropout,
     ).to(device)
 
-    # Projection head for pretraining objective
-    proj = nn.Linear(config.get("model_dim", 1024), config.get("model_dim", 1024)).to(device)
-
     optimizer = torch.optim.AdamW(
-        list(model.parameters()) + list(proj.parameters()),
+        model.parameters(),
         lr=lr,
         weight_decay=0.01
     )
@@ -194,6 +220,7 @@ def train_pretrain_expert(
     print(f"Device: {device}")
     print(f"Train samples: {len(train_dataset)}")
     print(f"Valid samples: {len(valid_dataset)}")
+    print(f"Model: input_proj({n_mels}->{model_dim}) + Expert + output_proj({model_dim}->{n_mels})")
     print(f"{'='*60}\n")
 
     best_loss = float("inf")
@@ -208,16 +235,12 @@ def train_pretrain_expert(
             audio_features, targets, input_lengths, target_lengths = batch
             audio_features = audio_features.to(device, non_blocking=True)
 
-            # Pretraining objective: reconstruct input through expert
+            # Pretraining objective: reconstruct mel-spectrogram
             with torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu"):
-                # Pass through input projection (simulate encoder output)
-                x = audio_features  # In real model, this would go through input_proj first
-                # But for pretraining, we just train the expert directly
-                h = model.expert(x)
-                recon = proj(h)
-
-                # MSE reconstruction loss
-                loss = F.mse_loss(recon, x)
+                recon, _ = model(audio_features)
+                # MSE reconstruction loss, masked by valid lengths
+                mask = (audio_features != 0).float()  # Simple mask for padding
+                loss = F.mse_loss(recon * mask, audio_features * mask, reduction="sum") / mask.sum()
 
             if scaler is not None:
                 scaler.scale(loss).backward()
@@ -250,10 +273,9 @@ def train_pretrain_expert(
                 audio_features = audio_features.to(device, non_blocking=True)
 
                 with torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu"):
-                    x = audio_features
-                    h = model.expert(x)
-                    recon = proj(h)
-                    loss = F.mse_loss(recon, x)
+                    recon, _ = model(audio_features)
+                    mask = (audio_features != 0).float()
+                    loss = F.mse_loss(recon * mask, audio_features * mask, reduction="sum") / mask.sum()
 
                 valid_loss += loss.item()
                 valid_steps += 1
@@ -268,12 +290,15 @@ def train_pretrain_expert(
             checkpoint_path = output_dir / f"expert_M{expert_id+1}.pt"
             torch.save({
                 'expert_state_dict': model.expert.state_dict(),
+                'input_proj_state_dict': model.input_proj.state_dict(),
+                'output_proj_state_dict': model.output_proj.state_dict(),
                 'epoch': epoch,
                 'best_loss': best_loss,
                 'config': {
-                    'expert_dim': model.expert.net[0].in_features,
-                    'ff_multiplier': model.expert.net[0].out_features // model.expert.net[0].in_features,
-                    'dropout': model.expert.net[3].p if hasattr(model.expert.net[3], 'p') else 0.1,
+                    'n_mels': n_mels,
+                    'expert_dim': model_dim,
+                    'ff_multiplier': ff_multiplier,
+                    'dropout': dropout,
                 }
             }, checkpoint_path)
             print(f"  → Saved checkpoint: {checkpoint_path}")

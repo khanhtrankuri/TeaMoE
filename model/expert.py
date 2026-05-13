@@ -34,7 +34,7 @@ class ExpertGroup(nn.Module):
 
     Args:
         config: Must contain:
-            - num_experts: number of experts in group (typically 5)
+            - num_experts: number of experts in group (typically 4)
             - expert_dim: dimension of expert input/output
         expert_pretrained_paths: Optional list of paths, one per expert
         use_attention_pooling: If True, use attention to combine expert outputs

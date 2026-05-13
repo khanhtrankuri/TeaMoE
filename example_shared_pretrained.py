@@ -33,8 +33,8 @@ config['model'].update({
     'decoder_hidden': 512,
     'num_heads': 8,
     'num_groups': 8,
-    'experts_per_group': 5,
-    'total_experts': 40,
+    'experts_per_group': 4,
+    'total_experts': 32,
 })
 
 # Update group configs to match model_dim
@@ -47,12 +47,11 @@ for group_cfg in config['model']['group_configs']:
 # SHARED PRETRAINED MODELS SETUP
 # =======================
 
-# You have 5 pretrained expert models (or None for training from scratch):
+# You have 4 pretrained expert models (or None for training from scratch):
 # - expert_M1.pt: Trained on diverse speech data
 # - expert_M2.pt: Trained on diverse speech data (different initialization)
 # - expert_M3.pt: Trained on diverse speech data
 # - expert_M4.pt: Trained on diverse speech data
-# - expert_M5.pt: Trained on diverse speech data
 
 # For this example, we'll use None (train from scratch)
 # In practice, replace with actual paths to your pretrained models
@@ -61,11 +60,10 @@ shared_expert_paths = [
     None,  # expert_M2.pt
     None,  # expert_M3.pt
     None,  # expert_M4.pt
-    None,  # expert_M5.pt
 ]
 
 # Create the group_expert_pretrained_paths structure:
-# Each group gets the SAME list of 5 pretrained paths
+# Each group gets the SAME list of 4 pretrained paths
 config['model']['group_expert_pretrained_paths'] = [
     shared_expert_paths,  # Group 0 (vowels)
     shared_expert_paths,  # Group 1 (plosives)

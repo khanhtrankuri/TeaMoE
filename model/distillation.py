@@ -38,13 +38,13 @@ class ExpertDistillation:
         flat_group_ids: (batch*time,) - group_id for each frame
         Returns: average distillation loss
         """
-        num_experts = group_outputs.shape[1]  # 5
+        num_experts = group_outputs.shape[1]  # 4
         if num_experts < 3:
             return torch.tensor(0.0)
 
         top_1_output = group_outputs[:, 0, :]  # (batch*time, expert_dim)
         top_2_output = group_outputs[:, 1, :]  # (batch*time, expert_dim)
-        student_outputs = group_outputs[:, 2:, :]  # (batch*time, 3, expert_dim)
+        student_outputs = group_outputs[:, 2:, :]  # (batch*time, 2, expert_dim)
 
         # Only apply to 10% of batches randomly
         if rng_key is not None:

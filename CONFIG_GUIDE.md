@@ -42,8 +42,8 @@ training:   # Training hyperparameters and logging
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `num_groups` | 8 | Number of acoustic groups (vowels, plosives, etc.) |
-| `experts_per_group` | 5 | Experts per group |
-| `total_experts` | 40 | Auto: `num_groups × experts_per_group` |
+| `experts_per_group` | 4 | Experts per group |
+| `total_experts` | 32 | Auto: `num_groups × experts_per_group` |
 | `top_k_groups` | 1 | Route to top-k groups during training |
 | `top_k_inference` | 2 | Route to top-k groups during eval |
 
@@ -54,8 +54,8 @@ group_expert_pretrained_paths: null  # Train from scratch (default)
 
 # OR with shared pretrained:
 group_expert_pretrained_paths:
-  - ["M1.pt", "M2.pt", "M3.pt", "M4.pt", "M5.pt"]  # Group 0
-  - ["M1.pt", "M2.pt", "M3.pt", "M4.pt", "M5.pt"]  # Group 1
+  - ["M1.pt", "M2.pt", "M3.pt", "M4.pt"]  # Group 0
+  - ["M1.pt", "M2.pt", "M3.pt", "M4.pt"]  # Group 1
   # ... repeat for all groups
 ```
 

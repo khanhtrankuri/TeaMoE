@@ -19,38 +19,38 @@ model:
 
   # -------------------- MoE Configuration --------------------
   num_groups: 8                 # Number of acoustic groups (vowels, plosives, fricatives, nasals, male, female, clean, other)
-  experts_per_group: 5          # Number of experts per group
-  total_experts: 40             # num_groups × experts_per_group (auto-calculated)
+  experts_per_group: 4          # Number of experts per group (reduced from 5 to 4)
+  total_experts: 32             # num_groups × experts_per_group (auto-calculated: 8 × 4 = 32)
   top_k_groups: 1               # Route to top-k groups during training (default: 1)
   top_k_inference: 2           # Route to top-k groups during inference (default: 2)
 
   # -------------------- Shared Pretrained Experts --------------------
   # Format: List[List[str]] - one inner list per group, each with paths for each expert
-  # Use 'null' for experts to train from scratch.
   #
-  # Example 1: No pretrained (train from scratch)
-  # group_expert_pretrained_paths: null
+  # Set to null to train from scratch (all experts initialized randomly)
+  # Provide paths to load pretrained experts (recommended after distillation)
   #
-  # Example 2: Shared pretrained models (5 models shared across all 8 groups)
+  # Example 1: No pretrained (train from scratch) - CURRENTLY ACTIVE
+  group_expert_pretrained_paths: null
+  #
+  # Example 2: Shared pretrained models (4 models shared across all 8 groups)
   # group_expert_pretrained_paths:
   #   - ["checkpoints/pretrained/expert_M1.pt",
   #      "checkpoints/pretrained/expert_M2.pt",
   #      "checkpoints/pretrained/expert_M3.pt",
-  #      "checkpoints/pretrained/expert_M4.pt",
-  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 0 (vowels)
+  #      "checkpoints/pretrained/expert_M4.pt"]  # Group 0 (vowels)
   #   - ["checkpoints/pretrained/expert_M1.pt",
   #      "checkpoints/pretrained/expert_M2.pt",
   #      "checkpoints/pretrained/expert_M3.pt",
-  #      "checkpoints/pretrained/expert_M4.pt",
-  #      "checkpoints/pretrained/expert_M5.pt"]  # Group 1 (plosives)
+  #      "checkpoints/pretrained/expert_M4.pt"]  # Group 1 (plosives)
   #   ... (repeat for all 8 groups)
   #
   # Example 3: Mixed (some shared, some from scratch)
   # group_expert_pretrained_paths:
-  #   - ["M1.pt", "M2.pt", null, null, null]   # Group 0: 2 shared + 3 scratch
-  #   - [null, null, null, null, null]         # Group 1: all scratch
+  #   - ["M1.pt", "M2.pt", null, null]   # Group 0: 2 shared + 2 scratch
+  #   - [null, null, null, null]         # Group 1: all scratch
   #
-  group_expert_pretrained_paths: null
+  group_expert_pretrained_paths: null  # Train from scratch
 
   # -------------------- Expert Pooling Strategy --------------------
   # How to combine outputs from multiple experts within a group
@@ -66,56 +66,56 @@ model:
   group_configs:
     - group_id: 0
       group_name: "vowels"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "vowels"
     - group_id: 1
       group_name: "plosives"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "plosives"
     - group_id: 2
       group_name: "fricatives"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "fricatives"
     - group_id: 3
       group_name: "nasals"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "nasals"
     - group_id: 4
       group_name: "male_speakers"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "male"
     - group_id: 5
       group_name: "female_speakers"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "female"
     - group_id: 6
       group_name: "clean_audio"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "clean"
     - group_id: 7
       group_name: "other_audio"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
@@ -157,8 +157,14 @@ model:
   use_matchmaker: true          # Enable matchmaker in competition (default: true)
   norm_after_moe: true          # Apply layer norm after MoE output (default: true)
 
+  # -------------------- Whisper Feature Integration --------------------
+  use_whisper_features: false           # Enable Whisper encoder features (default: false)
+  whisper_model_name: "openai/whisper-base"  # HuggingFace model name (default: openai/whisper-base)
+  whisper_freeze: true                  # Freeze Whisper encoder (recommended: true for initial experiments)
+  whisper_proj_dropout: 0.1             # Dropout on combined projection (optional, default: 0.1)
+
 # ----------------------------------------------------------------------------
-# DATA CONFIGURATION
+# DATA CONFIGURATION (Optimized for 4x A100)
 # ----------------------------------------------------------------------------
 data:
   manifests_dir: "datasets/processed_data_librispeech/manifests"
@@ -170,12 +176,12 @@ data:
   n_mels: 80
   hop_length: 256
   win_length: 1024
-  max_duration: 30.0           # Maximum audio duration in seconds (default: 30.0)
-  min_duration: 0.1            # Minimum audio duration (default: 0.1)
-  num_workers: 4               # DataLoader workers (default: 4)
-  prefetch_factor: 2           # Prefetch batches per worker (default: 2)
-  pin_memory: true             # Pin memory for GPU transfer (default: true)
-  persistent_workers: false    # Keep workers alive between epochs (default: false)
+  max_duration: 30.0
+  min_duration: 0.1
+  num_workers: 8               # More workers for faster data loading
+  prefetch_factor: 4           # Prefetch more batches
+  pin_memory: true
+  persistent_workers: true     # Keep workers alive across epochs
 
   # Data augmentation (optional)
   augmentation:
@@ -188,52 +194,52 @@ data:
       num_masks: 2
 
 # ----------------------------------------------------------------------------
-# TRAINING CONFIGURATION
+# TRAINING CONFIGURATION (Optimized for 4x A100 40GB)
 # ----------------------------------------------------------------------------
 training:
-  num_epochs: 100              # Total training epochs (default: 100)
-  batch_size: 16               # Per-GPU batch size (default: 16)
-  learning_rate: 0.001         # Peak learning rate (default: 0.001)
-  warmup_steps: 50000          # Linear warmup steps (default: 50000)
-  total_steps: 500000          # Total training steps (for scheduler, default: 500000)
+  num_epochs: 100              # Total training epochs
+  batch_size: 32               # Per-GPU batch size (4 GPUs × 32 = 128 global)
+  learning_rate: 0.001         # Peak learning rate (linear scale with batch)
+  warmup_steps: 5000           # Linear warmup steps
+  total_steps: 200000          # Total training steps
 
   # Optimization
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
   weight_decay: 0.01
-  optimizer: "adamw"           # Options: adamw, adam, sgd
-  beta1: 0.9                   # Adam beta1 (default: 0.9)
-  beta2: 0.999                 # Adam beta2 (default: 0.999)
-  eps: 1e-8                    # Adam epsilon (default: 1e-8)
+  optimizer: "adamw"
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
 
   # Mixed precision & efficiency
-  use_amp: true                # Mixed precision training (default: true)
-  use_checkpoint: true         # Gradient checkpointing (default: true)
-  use_compile: false           # torch.compile (requires PyTorch 2.0+, default: false)
+  use_amp: true                # FP16 mixed precision (CRITICAL for speed)
+  use_checkpoint: true         # Gradient checkpointing (saves ~60% VRAM)
+  use_compile: false           # torch.compile can add 10-20% speed
 
   # Evaluation & Logging
-  eval_every_n_steps: 1000     # Run validation every N steps (default: 1000)
-  log_every_n_steps: 10        # Log metrics every N steps (default: 10)
-  save_every_n_steps: 10000    # Save checkpoint every N steps (default: 10000)
-  keep_last_n_checkpoints: 5   # Number of recent checkpoints to keep (default: 5)
-  keep_best_checkpoints: 3     # Number of best checkpoints to keep (default: 3)
+  eval_every_n_steps: 500      # Run validation every 500 steps
+  log_every_n_steps: 10        # Log metrics every 10 steps
+  save_every_n_steps: 5000     # Save checkpoint every 5000 steps
+  keep_last_n_checkpoints: 5   # Number of recent checkpoints to keep
+  keep_best_checkpoints: 3     # Number of best checkpoints to keep
 
   # Early stopping
-  early_stopping_patience: 10  # Stop if no improvement after N evals (default: 10, 0=disabled)
-  early_stopping_metric: "wer" # Metric to monitor: wer, per, loss (default: wer)
+  early_stopping_patience: 10  # Stop if no improvement after 10 evals
+  early_stopping_metric: "wer" # Metric to monitor: wer, per, loss
 
   # Experiment tracking
-  wandb_project: "TeaMoE"      # Weights & Biases project name
-  wandb_entity: null           # Your W&B username/team (null for default)
-  wandb_tags: []               # Additional tags for this run
-  wandb_notes: ""              # Additional notes
-  wandb_mode: "online"         # Options: online, offline, disabled
-  log_to_console: true         # Print metrics to console (default: true)
+  wandb_project: "TeaMoE"
+  wandb_entity: null
+  wandb_tags: ["a100-4gpu", "full-model"]
+  wandb_notes: "4x A100 40GB distributed training"
+  wandb_mode: "online"
+  log_to_console: true
 
   # Hardware
-  device: null                 # "cuda", "cpu", or null for auto-detect
-  seed: 42                     # Random seed for reproducibility (default: 42)
-  deterministic: false         # Enable deterministic mode (slower, default: false)
+  device: null
+  seed: 42
+  deterministic: false
 
 # ----------------------------------------------------------------------------
 # DISTILLATION CONFIGURATION (for pretraining experts)
@@ -287,13 +293,13 @@ inference:
 # COMPETITION CONFIGURATION (Natural Niches)
 # ----------------------------------------------------------------------------
 competition:
-  enabled: true                # Enable competition during training
-  frequency_steps: 1000        # Run competition every N steps (default: 1000)
-  num_batches: 2               # Number of batches for fitness evaluation (default: 2)
-  alpha: 0.5                   # Fitness normalization exponent (default: 0.5)
-  use_matchmaker: true         # Use matchmaker selection (default: true)
-  mutation_rate: 0.01          # Mutation rate for offspring (default: 0.01)
-  elite_count: 1               # Number of elite experts to preserve (default: 1)
+  enabled: false               # Disable initially, enable after base training
+  frequency_steps: 1000
+  num_batches: 2
+  alpha: 0.5
+  use_matchmaker: false
+  mutation_rate: 0.01
+  elite_count: 1
 
 # ----------------------------------------------------------------------------
 # LOGGING & METRICS
@@ -320,14 +326,14 @@ logging:
   plot_specialization_trend: true  # Plot specialization over time
 
 # ----------------------------------------------------------------------------
-# MULTI-GPU CONFIGURATION
+# MULTI-GPU CONFIGURATION (4x A100 40GB)
 # ----------------------------------------------------------------------------
 distributed:
-  enabled: false               # Enable distributed training (default: false)
-  backend: "nccl"              # Backend: nccl, gloo (default: nccl)
-  init_method: "env://"        # Distributed init method (default: env://)
-  world_size: 1                # Total number of GPUs (set automatically)
-  rank: 0                      # Current GPU rank (set automatically)
+  enabled: true                # Enable distributed training (DDP)
+  backend: "nccl"              # NCCL backend for NVIDIA GPUs
+  init_method: "env://"        # Distributed init method
+  world_size: 4                # 4 GPUs
+  rank: 0                      # Set automatically by torchrun
 
 # ----------------------------------------------------------------------------
 # CHECKPOINTING

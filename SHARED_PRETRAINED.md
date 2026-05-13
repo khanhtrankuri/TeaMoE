@@ -161,13 +161,13 @@ For TeaMoE (1024D, 8 groups): **+8-10M total** (negligible vs 200M base model)
 ```yaml
 model:
   num_groups: 8
-  experts_per_group: 5
-  total_experts: 40
+  experts_per_group: 4
+  total_experts: 32
 
-  # Each group gets SAME list of 5 paths
+  # Each group gets SAME list of 4 paths
   group_expert_pretrained_paths:
-    - ["M1.pt", "M2.pt", "M3.pt", "M4.pt", "M5.pt"]  # Group 0 (vowels)
-    - ["M1.pt", "M2.pt", "M3.pt", "M4.pt", "M5.pt"]  # Group 1 (plosives)
+    - ["M1.pt", "M2.pt", "M3.pt", "M4.pt"]  # Group 0 (vowels)
+    - ["M1.pt", "M2.pt", "M3.pt", "M4.pt"]  # Group 1 (plosives)
     - [...]  # Groups 2-7: all identical
 ```
 
@@ -175,8 +175,8 @@ model:
 
 ```yaml
 group_expert_pretrained_paths:
-  - ["M1.pt", "M2.pt", null, null, null]   # Group 0: 2 shared + 3 scratch
-  - [null, null, null, null, null]         # Group 1: all scratch
+  - ["M1.pt", "M2.pt", null, null]   # Group 0: 2 shared + 2 scratch
+  - [null, null, null, null]         # Group 1: all scratch
 ```
 
 ### Legacy Format (Deprecated)

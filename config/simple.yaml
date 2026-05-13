@@ -96,6 +96,12 @@ model:
   use_matchmaker: false         # Disable matchmaker initially
   norm_after_moe: true
 
+  # -------------------- Whisper Feature Integration --------------------
+  use_whisper_features: false
+  whisper_model_name: "openai/whisper-base"
+  whisper_freeze: true
+  whisper_proj_dropout: 0.1
+
 # ----------------------------------------------------------------------------
 # DATA CONFIGURATION
 # ----------------------------------------------------------------------------

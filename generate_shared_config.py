@@ -21,8 +21,8 @@ def main():
                         help="Output config file")
     parser.add_argument("--num-groups", type=int, default=8,
                         help="Number of expert groups")
-    parser.add_argument("--experts-per-group", type=int, default=5,
-                        help="Number of experts per group")
+    parser.add_argument("--experts-per-group", type=int, default=4,
+                        help="Number of experts per group (default: 4)")
     args = parser.parse_args()
 
     # Load base config

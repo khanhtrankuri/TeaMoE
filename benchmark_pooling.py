@@ -89,7 +89,7 @@ def main():
     print("-"*70)
 
     config_small = {
-        'num_experts': 5,
+        'num_experts': 4,
         'expert_dim': 128,
         'ff_multiplier': 4,
         'dropout': 0.1,

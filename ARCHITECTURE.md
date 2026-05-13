@@ -401,8 +401,8 @@ model:
 
   # MoE configuration
   num_groups: 8
-  experts_per_group: 5
-  total_experts: 40
+  experts_per_group: 4
+  total_experts: 32
 
   # Shared pretrained experts
   group_expert_pretrained_paths: null  # or List[List[str]]
@@ -617,11 +617,11 @@ Simple FFN expert.
 ---
 
 #### `ExpertGroup(config, expert_pretrained_paths=None, use_attention_pooling=False, ...)`
-Container for 5 experts with pooling.
+Container for 4 experts with pooling.
 
 **Args**:
 - `config`: Dict with `num_experts`, `expert_dim`, `ff_multiplier`, `dropout`
-- `expert_pretrained_paths`: List of 5 checkpoint paths (or None)
+- `expert_pretrained_paths`: List of 4 checkpoint paths (or None)
 - `use_attention_pooling`: If True, use attention; else mean pool
 - `attn_heads`: Attention heads (only if pooling=attention)
 - `attn_dropout`: Attention dropout

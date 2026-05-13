@@ -112,8 +112,8 @@ model:
   model_dim: 1024
   num_heads: 16
   num_groups: 8
-  experts_per_group: 5
-  total_experts: 40
+  experts_per_group: 4
+  total_experts: 32
   # ...
 
 data:

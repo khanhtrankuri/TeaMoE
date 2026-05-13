@@ -19,7 +19,13 @@
       "Bash(python test_expert_attention.py)",
       "Read(//tmp/**)",
       "Bash(tee distill_run.log)",
-      "Bash(taskkill /f /im python.exe)"
+      "Bash(taskkill /f /im python.exe)",
+      "Bash(Select-String -Pattern '.')",
+      "Bash(powershell *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Admin\\\\Documents\\\\TeaMoE\" -Recurse -File)",
+      "Bash(Select-Object FullName, Length, LastWriteTime)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Out-String -Width 200)"
     ]
   }
 }

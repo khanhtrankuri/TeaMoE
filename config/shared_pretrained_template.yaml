@@ -18,18 +18,20 @@ model:
 
   # -------------------- MoE Configuration --------------------
   num_groups: 8
-  experts_per_group: 5
-  total_experts: 40
+  experts_per_group: 4
+  total_experts: 32
   top_k_groups: 1
   top_k_inference: 2
 
   # -------------------- Shared Pretrained Experts --------------------
   # THIS WILL BE FILLED BY generate_shared_config.py
-  # Expected format after generation:
+  # Expected format after generation (4 pretrained models per group):
   # group_expert_pretrained_paths:
-  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt", ...]  # Group 0
-  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt", ...]  # Group 1
-  #   ... (repeat for all 8 groups, all pointing to same 5 files)
+  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt", "checkpoints/pretrained/expert_M4.pt"]  # Group 0
+  #   - ["checkpoints/pretrained/expert_M1.pt", "checkpoints/pretrained/expert_M2.pt",
+  #      "checkpoints/pretrained/expert_M3.pt", "checkpoints/pretrained/expert_M4.pt"]  # Group 1
+  #   ... (repeat for all 8 groups)
   group_expert_pretrained_paths: null  # Will be replaced
 
   # -------------------- Expert Pooling Strategy --------------------
@@ -42,56 +44,56 @@ model:
   group_configs:
     - group_id: 0
       group_name: "vowels"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "vowels"
     - group_id: 1
       group_name: "plosives"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "plosives"
     - group_id: 2
       group_name: "fricatives"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "fricatives"
     - group_id: 3
       group_name: "nasals"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "nasals"
     - group_id: 4
       group_name: "male_speakers"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "male"
     - group_id: 5
       group_name: "female_speakers"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "female"
     - group_id: 6
       group_name: "clean_audio"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "clean"
     - group_id: 7
       group_name: "other_audio"
-      num_experts: 5
+      num_experts: 4
       expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
@@ -117,6 +119,12 @@ model:
 
   alpha: 0.5
   use_matchmaker: true
+
+  # -------------------- Whisper Feature Integration --------------------
+  use_whisper_features: false
+  whisper_model_name: "openai/whisper-base"
+  whisper_freeze: true
+  whisper_proj_dropout: 0.1
 
 # ============================================================================
 # DATA

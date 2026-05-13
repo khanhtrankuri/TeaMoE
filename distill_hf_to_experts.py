@@ -1,22 +1,21 @@
 """
 Distill HuggingFace Pretrained Speech Models into TeaMoE Expert Checkpoints
 
-This script takes 5 large pretrained speech models and distills their encoder
+This script takes 4 pretrained speech models and distills their encoder
 representations into simple FFN expert checkpoints compatible with TeaMoE.
 
 Models to distill:
 1. facebook/mms-300m (Multilingual Multimodal)
-2. speechbrain/asr-conformersmall-transformerlm-librispeech
-3. facebook/hubert-large-ls960-ft
-4. facebook/wav2vec2-large-xlsr-53
-5. openai/whisper-large-v3
+2. facebook/hubert-large-ls960-ft
+3. facebook/wav2vec2-large-xlsr-53
+4. openai/whisper-large-v3
 
-Output: expert_M1.pt through expert_M5.pt
+Output: expert_0.pt through expert_3.pt
 
 Usage:
   python distill_hf_to_experts.py \
     --output-dir checkpoints/pretrained \
-    --model-names "facebook/mms-300m" "speechbrain/asr-conformersmall-transformerlm-librispeech" \
+    --model-names "facebook/mms-300m" "facebook/hubert-large-ls960-ft" \
     --batch-size 32 \
     --epochs 5
 """
@@ -44,11 +43,6 @@ MODEL_HANDLES = {
     "mms-300m": {
         "hf_name": "facebook/mms-300m",
         "target_dim": 1024,  # MMS hidden size
-        "processor": None,
-    },
-    "speechbrain-conformer": {
-        "hf_name": "speechbrain/asr-conformersmall-transformerlm-librispeech",
-        "target_dim": 256,  # SpeechBrain conformer dim
         "processor": None,
     },
     "hubert-large": {
@@ -263,16 +257,6 @@ class HFModelWrapper(nn.Module):
                 self.processor = None
             self.target_key = "last_hidden_state"
             self.use_processor = False  # Whisper uses different input handling
-        elif "speechbrain" in model_name.lower():
-            # SpeechBrain uses a different API
-            from speechbrain.pretrained import EncoderDecoderASR
-            self.model = EncoderDecoderASR.from_hparams(
-                source=model_name,
-                savedir="pretrained_models/speechbrain_temp"
-            )
-            self.processor = None
-            self.target_key = "encoder"
-            self.use_processor = False
         else:
             # Generic AutoModel - try with processor, may fail
             self.model = AutoModel.from_pretrained(model_name)
@@ -302,13 +286,6 @@ class HFModelWrapper(nn.Module):
             features: [B, T', target_dim] extracted features
         """
         with torch.no_grad():
-            if "speechbrain" in self.model_name.lower():
-                # SpeechBrain API
-                outputs = self.model.encode_batch(waveforms.to(self.device))
-                # SpeechBrain returns [B, 1, T', D], squeeze
-                features = outputs.squeeze(1)
-                return features
-
             # For models without processor (MMS, some Whisper)
             if not self.use_processor or self.processor is None:
                 # Direct waveform input (normalize to expected range)
@@ -389,6 +366,7 @@ def distill_one_expert(
     lr: float = 1e-3,
     device: torch.device = torch.device("cuda"),
     output_dir: Optional[Path] = None,
+    expert_index: int = 0,
 ):
     """Distill one expert from HF model."""
     optimizer = torch.optim.AdamW(student.parameters(), lr=lr, weight_decay=0.01)
@@ -487,7 +465,8 @@ def distill_one_expert(
 
         if avg_val < best_loss and output_dir:
             best_loss = avg_val
-            checkpoint_path = output_dir / f"expert_M{hf_wrapper.model_name.split('-')[-1] if '-' in hf_wrapper.model_name else '1'}.pt"
+            # Use sequential naming: expert_0.pt, expert_1.pt, etc.
+            checkpoint_path = output_dir / f"expert_{expert_index}.pt"
             torch.save({
                 'expert_state_dict': student.expert.state_dict(),
                 'epoch': epoch,
@@ -510,9 +489,8 @@ def main():
     parser.add_argument("--output-dir", type=str, default="checkpoints/pretrained",
                         help="Output directory for expert checkpoints")
     parser.add_argument("--model-names", type=str, nargs="+",
-                        default=["facebook/mms-300m", "speechbrain/asr-conformersmall-transformerlm-librispeech",
-                                 "facebook/hubert-large-ls960-ft", "facebook/wav2vec2-large-xlsr-53",
-                                 "openai/whisper-large-v3"],
+                        default=["facebook/mms-300m", "facebook/hubert-large-ls960-ft",
+                                 "facebook/wav2vec2-large-xlsr-53", "openai/whisper-large-v3"],
                         help="List of HF model names to distill")
     parser.add_argument("--train-manifest", type=str,
                         default="datasets/processed_data_librispeech/manifests/train.jsonl",
@@ -634,6 +612,7 @@ def main():
                 lr=args.lr,
                 device=device,
                 output_dir=output_dir,
+                expert_index=i,  # Pass index for sequential naming
             )
 
             print(f"[OK] Distillation complete. Best val loss: {best_loss:.4f}")

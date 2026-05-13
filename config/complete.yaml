@@ -158,16 +158,16 @@ model:
   norm_after_moe: true          # Apply layer norm after MoE output (default: true)
 
   # -------------------- Whisper Feature Integration --------------------
-  use_whisper_features: false           # Enable Whisper encoder features (default: false)
-  whisper_model_name: "openai/whisper-base"  # HuggingFace model name (default: openai/whisper-base)
-  whisper_freeze: true                  # Freeze Whisper encoder (recommended: true for initial experiments)
-  whisper_proj_dropout: 0.1             # Dropout on combined projection (optional, default: 0.1)
+  use_whisper_features: true            # Enable Whisper encoder features
+  whisper_model_name: "openai/whisper-base"
+  whisper_freeze: true                  # Freeze Whisper for stability
+  whisper_proj_dropout: 0.1
 
 # ----------------------------------------------------------------------------
 # DATA CONFIGURATION (Optimized for 4x A100)
 # ----------------------------------------------------------------------------
 data:
-  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  manifests_dir: "/home/an.dangthithuy/khanhtl/TeaMoE/datasets/processed_data_librispeech/manifests"
   train_manifest: "train.jsonl"
   valid_manifest: "validation.jsonl"
   test_manifest: "test.jsonl"

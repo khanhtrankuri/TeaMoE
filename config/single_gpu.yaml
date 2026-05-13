@@ -25,8 +25,40 @@ model:
   top_k_inference: 2            # Route to top-k groups during inference
 
   # -------------------- Shared Pretrained Experts --------------------
-  # Set to null to train from scratch
-  group_expert_pretrained_paths: null
+  # Pretrained experts from distillation (expert_0.pt to expert_3.pt)
+  group_expert_pretrained_paths:
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
+       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
 
   # -------------------- Expert Pooling Strategy --------------------
   use_attention_pooling: false  # Mean pooling (simpler, less VRAM)
@@ -126,16 +158,16 @@ model:
   norm_after_moe: true
 
   # -------------------- Whisper Feature Integration --------------------
-  use_whisper_features: false
+  use_whisper_features: true            # Enable Whisper encoder features
   whisper_model_name: "openai/whisper-base"
-  whisper_freeze: true
+  whisper_freeze: true                  # Freeze Whisper for stability
   whisper_proj_dropout: 0.1
 
 # ----------------------------------------------------------------------------
 # DATA CONFIGURATION
 # ----------------------------------------------------------------------------
 data:
-  manifests_dir: "datasets/processed_data_librispeech/manifests"
+  manifests_dir: "/home/an.dangthithuy/khanhtl/TeaMoE/datasets/processed_data_librispeech/manifests"
   train_manifest: "train.jsonl"
   valid_manifest: "validation.jsonl"
   test_manifest: "test.jsonl"
@@ -215,7 +247,6 @@ training:
 distillation:
   hf_models:
     - "facebook/mms-300m"
-    - "speechbrain/asr-conformersmall-transformerlm-librispeech"
     - "facebook/hubert-large-ls960-ft"
     - "facebook/wav2vec2-large-xlsr-53"
     - "openai/whisper-large-v3"
@@ -336,13 +367,14 @@ profiling:
 #    - max_duration: 25 → 20
 #    - num_layers: 20 → 16
 #
-# 5. Estimated VRAM usage:
-#    - Model (FP16): ~1.2 GB
-#    - Gradients: ~1.2 GB
+# 5. Estimated VRAM usage (with Whisper features):
+#    - Whisper encoder (frozen): ~0 GB (no gradients)
+#    - Model (FP16): ~1.5 GB
+#    - Gradients: ~1.5 GB
 #    - Optimizer: ~5 GB
 #    - Activations: ~8-10 GB (with checkpointing)
 #    - Data buffers: ~2 GB
-#    - Total: ~18-22 GB / 24 GB
+#    - Total: ~20-24 GB / 24 GB
 #
 # 6. Estimated training time (LibriSpeech 960h):
 #    - 1 epoch (~17K steps): ~12-18 hours

@@ -4,3 +4,4 @@ wandb/
 outputs/
 *.sh
 datasets/
+*.pt

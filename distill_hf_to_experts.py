@@ -285,12 +285,50 @@ class HFModelWrapper(nn.Module):
         Returns:
             features: [B, T', target_dim] extracted features
         """
+        from transformers import WhisperProcessor
+
         with torch.no_grad():
-            # For models without processor (MMS, some Whisper)
-            if not self.use_processor or self.processor is None:
+            # Special handling for Whisper - it needs Mel spectrograms
+            if "whisper" in self.model_name.lower():
+                # WhisperProcessor converts waveform to log-Mel spectrogram
+                try:
+                    # Ensure waveforms are on CPU and float32
+                    audio_np = waveforms.cpu().numpy()
+
+                    # For Whisper, we need to pad or truncate each sample to 30 seconds
+                    # 30 seconds @ 16kHz = 480,000 samples
+                    target_samples = 30 * 16000
+
+                    processed_audio = []
+                    for wav in audio_np:
+                        if len(wav) < target_samples:
+                            # Pad to target length
+                            wav = np.pad(wav, (0, target_samples - len(wav)), mode='constant')
+                        else:
+                            # Truncate to target length
+                            wav = wav[:target_samples]
+                        processed_audio.append(wav)
+
+                    audio_np = np.array(processed_audio)
+
+                    inputs = self.processor(
+                        audio_np,
+                        sampling_rate=16000,
+                        return_tensors="pt",
+                        padding=True,
+                    ).input_features.to(self.device)
+
+                    # Whisper encoder expects input_features (Mel spectrograms)
+                    # with shape [B, 80, 3000] where 3000 frames = 30 seconds
+                    encoder_inputs = {"input_features": inputs}
+                except Exception as e:
+                    print(f"[WARN] Whisper processor failed: {e}, falling back to raw waveform")
+                    inputs = waveforms.to(self.device)
+                    encoder_inputs = {"input_values": inputs}
+            elif not self.use_processor or self.processor is None:
                 # Direct waveform input (normalize to expected range)
                 inputs = waveforms.to(self.device)
-                # Some models expect specific sampling rate, but we assume 16kHz already
+                encoder_inputs = {"input_values": inputs}
             else:
                 # Standard processor (Wav2Vec2, Hubert)
                 try:
@@ -300,11 +338,12 @@ class HFModelWrapper(nn.Module):
                         return_tensors="pt",
                         padding=True,
                     ).input_values.to(self.device)
+                    encoder_inputs = {"input_values": inputs}
                 except:
                     # Fallback: raw waveform
-                    inputs = waveforms.to(self.device)
+                    encoder_inputs = {"input_values": waveforms.to(self.device)}
 
-            outputs = self.model(inputs)
+            outputs = self.model(**encoder_inputs)
             features = getattr(outputs, self.target_key)
 
             return features
@@ -566,7 +605,7 @@ def main():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=collate_fn_distill,
@@ -574,7 +613,7 @@ def main():
     )
     val_loader = DataLoader(
         valid_dataset,
-        batch_size=args.batch_size * 2,
+        batch_size=batch_size * 2,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=collate_fn_distill,
@@ -587,6 +626,12 @@ def main():
         print(f"\n{'='*60}")
         print(f"[{i+1}/{len(args.model_names)}] Distilling: {model_name}")
         print(f"{'='*60}")
+
+        # Adjust batch size per model to avoid OOM
+        batch_size = args.batch_size
+        if "whisper" in model_name.lower():
+            batch_size = max(1, args.batch_size // 2)  # Whisper needs smaller batch
+            print(f"[INFO] Reduced batch_size to {batch_size} for Whisper to avoid OOM")
 
         try:
             # Load HF wrapper

@@ -5,3 +5,6 @@ outputs/
 *.sh
 datasets/
 *.pt
+checkspoints/
+*.log
+*.pt

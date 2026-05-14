@@ -318,11 +318,13 @@ class HFModelWrapper(nn.Module):
                         padding=True,
                     ).input_features.to(self.device)
 
-                    # Whisper encoder expects input_features (Mel spectrograms)
-                    # with shape [B, 80, 3000] where 3000 frames = 30 seconds
-                    encoder_inputs = {"input_features": inputs}
+                    # Call encoder directly to avoid needing decoder inputs
+                    encoder_outputs = self.model.encoder(input_features=inputs)
+                    features = encoder_outputs.last_hidden_state
+                    return features
                 except Exception as e:
                     print(f"[WARN] Whisper processor failed: {e}, falling back to raw waveform")
+                    # Fallback: try with raw waveform
                     inputs = waveforms.to(self.device)
                     encoder_inputs = {"input_values": inputs}
             elif not self.use_processor or self.processor is None:
@@ -605,7 +607,7 @@ def main():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=collate_fn_distill,
@@ -613,7 +615,7 @@ def main():
     )
     val_loader = DataLoader(
         valid_dataset,
-        batch_size=batch_size * 2,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=collate_fn_distill,

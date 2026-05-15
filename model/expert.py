@@ -60,8 +60,13 @@ class ExpertGroup(nn.Module):
             if expert_pretrained_paths is not None and i < len(expert_pretrained_paths):
                 pretrained_path = expert_pretrained_paths[i]
                 if pretrained_path is not None:
-                    state_dict = torch.load(pretrained_path, map_location='cpu')
-                    expert.load_state_dict(state_dict)
+                    loaded = torch.load(pretrained_path, map_location='cpu', weights_only=True)
+                    # Handle wrapped checkpoints with metadata
+                    if isinstance(loaded, dict) and 'expert_state_dict' in loaded:
+                        state_dict = loaded['expert_state_dict']
+                    else:
+                        state_dict = loaded
+                    expert.load_state_dict(state_dict, strict=True)
             setattr(self, f"expert_{i}", expert)
 
         # Attention-based pooling (optional)

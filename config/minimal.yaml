@@ -1,6 +1,6 @@
 # ============================================================================
 # TeaMoE Minimal Configuration
-# Optimized for NVIDIA RTX 4070 8GB VRAM (Single GPU Training)
+# Using Shared Pretrained Experts (HuBERT & wav2vec2)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -8,79 +8,90 @@
 # ----------------------------------------------------------------------------
 model:
   # -------------------- Encoder Backbone --------------------
-  # Heavily reduced for 8GB VRAM
-  num_layers: 8                 # Total transformer layers (minimal)
-  moe_start_layer: 3            # First layer with MoE (0-indexed)
-  moe_end_layer: 9              # Last layer with MoE (exclusive)
-  model_dim: 256                # Hidden dimension (minimal for 8GB)
-  num_heads: 8                  # Multi-head attention heads
-  conv_kernel_size: 31          # Depthwise conv kernel
-  ff_multiplier: 4              # FFN expansion factor
+  num_layers: 12
+  moe_start_layer: 3
+  moe_end_layer: 10
+  model_dim: 1024              # Match pretrained expert input dim
+  num_heads: 16
+  conv_kernel_size: 31
+  ff_multiplier: 4
 
   # -------------------- MoE Configuration --------------------
-  num_groups: 4                 # Reduced groups (4 instead of 8)
-  experts_per_group: 4          # Experts per group
-  total_experts: 16             # num_groups × experts_per_group (4 × 4 = 16)
-  top_k_groups: 1               # Route to top-k groups during training
-  top_k_inference: 2            # Route to top-k groups during inference
+  num_groups: 4
+  experts_per_group: 4
+  total_experts: 16
+  top_k_groups: 1
+  top_k_inference: 2
 
   # -------------------- Shared Pretrained Experts --------------------
-  # Set to null to train from scratch
-  group_expert_pretrained_paths: null
+  # expert_1.pt: facebook/hubert-large-ls960-ft
+  # expert_2.pt: facebook/wav2vec2-large-xlsr-53
+  # Using 2 groups with pretrained experts, 2 groups random init
+  group_expert_pretrained_paths:
+    - ["./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_1.pt"]
+    - ["./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_2.pt"]
+    - [null, null, null, null]
+    - [null, null, null, null]
 
   # -------------------- Expert Pooling Strategy --------------------
-  use_attention_pooling: false  # Mean pooling (simpler, less VRAM)
+  use_attention_pooling: false
   attn_heads: 4
   attn_dropout: 0.1
 
   # -------------------- Group Configurations --------------------
-  # Only 4 groups for minimal config
+  # expert_dim=1024 matches pretrained checkpoint (input dim), ff_multiplier=4 -> hidden=4096
   group_configs:
     - group_id: 0
+      group_name: "hubert_experts"
+      num_experts: 4
+      expert_dim: 1024         # Match pretrained checkpoint input dim
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "hubert"
+    - group_id: 1
+      group_name: "wav2vec2_experts"
+      num_experts: 4
+      expert_dim: 1024         # Match pretrained checkpoint input dim
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "wav2vec2"
+    - group_id: 2
       group_name: "vowels"
       num_experts: 4
-      expert_dim: 256
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "vowels"
-    - group_id: 1
+    - group_id: 3
       group_name: "plosives"
       num_experts: 4
-      expert_dim: 256
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "plosives"
-    - group_id: 2
-      group_name: "fricatives"
-      num_experts: 4
-      expert_dim: 256
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "fricatives"
-    - group_id: 3
-      group_name: "nasals"
-      num_experts: 4
-      expert_dim: 256
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "nasals"
 
   # -------------------- Decoder (RNN-T) --------------------
-  vocab_size: 1000              # Reduced vocabulary for speed
-  decoder_hidden: 256           # Match model_dim
-  decoder_layers: 1             # Reduced layers
+  vocab_size: 5000
+  decoder_hidden: 1024
+  decoder_layers: 2
   blank_id: 0
 
   # -------------------- Auxiliary Phone Head --------------------
-  num_phones: 128               # Reduced phone set
+  num_phones: 256
   phone_blank_id: 0
 
   # -------------------- Loss Weights --------------------
-  competition_freq_steps: 0     # Disabled
-  distillation_weight: 0.0      # Disabled for minimal config
+  competition_freq_steps: 1000
+  distillation_weight: 0.1
   load_balance_weight: 0.01
   z_loss_weight: 0.001
-  ctc_phone_weight: 0.0         # Disabled to simplify
+  ctc_phone_weight: 0.3
 
   # -------------------- Audio Preprocessing --------------------
   sample_rate: 16000
@@ -99,16 +110,16 @@ model:
   norm_after_moe: true
 
   # -------------------- Whisper Feature Integration --------------------
-  use_whisper_features: true            # Enable Whisper encoder features
+  use_whisper_features: false
   whisper_model_name: "openai/whisper-base"
-  whisper_freeze: true                  # Freeze Whisper for stability
+  whisper_freeze: true
   whisper_proj_dropout: 0.1
 
 # ----------------------------------------------------------------------------
 # DATA CONFIGURATION
 # ----------------------------------------------------------------------------
 data:
-  manifests_dir: "/home/an.dangthithuy/khanhtl/TeaMoE/datasets/processed_data_librispeech/manifests"
+  manifests_dir: "./datasets/processed_data_librispeech/manifests"
   train_manifest: "train.jsonl"
   valid_manifest: "validation.jsonl"
   test_manifest: "test.jsonl"
@@ -117,35 +128,35 @@ data:
   n_mels: 80
   hop_length: 256
   win_length: 1024
-  max_duration: 10.0            # Short duration for 8GB VRAM
+  max_duration: 15.0
   min_duration: 0.1
-  num_workers: 2                # Minimal workers
+  num_workers: 4
   prefetch_factor: 2
   pin_memory: true
-  persistent_workers: false
+  persistent_workers: true
 
-  # Data augmentation (CRITICAL for small model)
+  # Data augmentation
   augmentation:
     enabled: true
     speed_perturbation: [0.9, 1.0, 1.1]
     spec_augment:
       enabled: true
-      freq_mask_param: 15
-      time_mask_param: 30
+      freq_mask_param: 20
+      time_mask_param: 50
       num_masks: 2
 
 # ----------------------------------------------------------------------------
 # TRAINING CONFIGURATION
 # ----------------------------------------------------------------------------
 training:
-  num_epochs: 50                # Fewer epochs for testing
-  batch_size: 2                 # Very small batch for 8GB
-  learning_rate: 0.0005         # Conservative LR
-  warmup_steps: 1000            # Short warmup
-  total_steps: 50000            # Total training steps
+  num_epochs: 50
+  batch_size: 8
+  learning_rate: 0.0005
+  warmup_steps: 2000
+  total_steps: 50000
 
   # Optimization
-  gradient_accumulation_steps: 4  # Effective batch = 4 × 4 = 16
+  gradient_accumulation_steps: 2
   max_grad_norm: 1.0
   weight_decay: 0.01
   optimizer: "adamw"
@@ -153,27 +164,27 @@ training:
   beta2: 0.999
   eps: 1e-8
 
-  # Mixed precision & efficiency (MANDATORY for 8GB)
-  use_amp: true                 # FP16 mixed precision (required)
-  use_checkpoint: true          # Gradient checkpointing (required)
-  use_compile: false            # Disabled for compatibility
+  # Mixed precision & efficiency
+  use_amp: true
+  use_checkpoint: true
+  use_compile: false
 
   # Evaluation & Logging
-  eval_every_n_steps: 200       # Frequent validation
-  log_every_n_steps: 10         # Log every 10 steps
-  save_every_n_steps: 1000      # Save checkpoints
-  keep_last_n_checkpoints: 2    # Minimal checkpoint storage
-  keep_best_checkpoints: 1      # Keep only best
+  eval_every_n_steps: 500
+  log_every_n_steps: 10
+  save_every_n_steps: 2000
+  keep_last_n_checkpoints: 3
+  keep_best_checkpoints: 2
 
   # Early stopping
-  early_stopping_patience: 5
+  early_stopping_patience: 10
   early_stopping_metric: "wer"
 
   # Experiment tracking
-  wandb_project: "TeaMoE-minimal"
+  wandb_project: "TeaMoE-pretrained"
   wandb_entity: null
-  wandb_tags: ["minimal", "rtx4070", "debug"]
-  wandb_notes: "RTX 4070 8GB minimal config - testing pipeline"
+  wandb_tags: ["pretrained", "hubert", "wav2vec2"]
+  wandb_notes: "Training with HuBERT + wav2vec2 pretrained experts"
   wandb_mode: "online"
   log_to_console: true
 
@@ -188,13 +199,15 @@ training:
 distillation:
   hf_models:
     - "facebook/mms-300m"
-    - "speechbrain/asr-conformersmall-transformerlm-librispeech"
+    - "facebook/hubert-large-ls960-ft"
+    - "facebook/wav2vec2-large-xlsr-53"
+    - "openai/whisper-large-v3"
 
-  epochs: 3
-  batch_size: 8
-  learning_rate: 5e-4
-  num_workers: 2
-  expert_dim: 256
+  epochs: 5
+  batch_size: 16
+  learning_rate: 1e-3
+  num_workers: 4
+  expert_dim: 1024
   n_mels: 80
   loss: "mse"
 
@@ -203,11 +216,11 @@ distillation:
 # ----------------------------------------------------------------------------
 inference:
   decoder_type: "greedy"
-  beam_size: 4
+  beam_size: 5
   beam_alpha: 0.6
   beam_beta: 0.0
   rnnt_blank_id: 0
-  rnnt_max_symbols_per_step: 5
+  rnnt_max_symbols_per_step: 10
   apply_lm: false
   lm_weight: 0.5
   am_weight: 0.5
@@ -220,7 +233,7 @@ inference:
 competition:
   enabled: false
   frequency_steps: 1000
-  num_batches: 1
+  num_batches: 2
   alpha: 0.5
   use_matchmaker: false
   mutation_rate: 0.01
@@ -240,7 +253,7 @@ logging:
   compute_wer: true
   compute_per: true
   compute_gini: true
-  compute_expert_diversity: false
+  compute_expert_diversity: true
   compute_specialization: false
 
   plot_expert_usage: true
@@ -290,32 +303,19 @@ profiling:
 # USAGE INSTRUCTIONS
 # ============================================================================
 #
-# 1. Train on RTX 4070 8GB:
+# 1. Train with pretrained experts:
 #    python train.py --config config/minimal.yaml
 #
-# 2. If OOM errors occur, reduce further:
-#    - batch_size: 4 → 2
-#    - max_duration: 15 → 10
-#    - num_layers: 12 → 8
-#    - model_dim: 512 → 256
+# 2. Pretrained experts used:
+#    - Group 0 (hubert_experts): expert_1.pt (HuBERT Large)
+#    - Group 1 (wav2vec2_experts): expert_2.pt (wav2vec2 XLSR)
+#    - Group 2-3: Random initialization
 #
-# 3. This is a DEBUG/TEST config - not for production
-#    Goal: Verify pipeline works before scaling up
-#
-# 4. Estimated VRAM usage:
-#    - Model (FP16): ~100 MB
-#    - Gradients: ~100 MB
-#    - Optimizer: ~800 MB
-#    - Activations: ~4-5 GB (with checkpointing)
-#    - Data buffers: ~1 GB
-#    - Total: ~6-7 GB / 8 GB
-#
-# 5. Estimated training time (subset of LibriSpeech):
-#    - 1 epoch: ~4-6 hours
-#    - 50 epochs: ~10-15 days
-#
-# 6. Next steps after successful test:
-#    - Scale to config/single_gpu.yaml (A5000 24GB settings)
-#    - Then scale to config/complete.yaml (4x A100 settings)
+# 3. Estimated VRAM usage:
+#    - Model (FP16): ~2 GB
+#    - Gradients: ~2 GB
+#    - Optimizer: ~4 GB
+#    - Activations: ~6-8 GB
+#    - Total: ~14-18 GB / 24 GB
 #
 # ============================================================================

@@ -5,7 +5,7 @@ checkpoint:
   mode: min
   resume_from_checkpoint: null
   save_best_only: false
-  save_dir: checkpoints/minimal
+  save_dir: checkpoints/single_gpu
   save_optimizer: true
   save_rng_state: true
   save_scheduler: true
@@ -20,7 +20,7 @@ competition:
   use_matchmaker: false
 data:
   augmentation:
-    enabled: true
+    enabled: false
     spec_augment:
       enabled: true
       freq_mask_param: 20
@@ -32,7 +32,7 @@ data:
     - 1.1
   hop_length: 256
   manifests_dir: ./datasets/processed_data_librispeech/manifests
-  max_duration: 15.0
+  max_duration: 25.0
   min_duration: 0.1
   n_mels: 80
   num_workers: 4
@@ -96,7 +96,7 @@ model:
   attn_dropout: 0.1
   attn_heads: 4
   blank_id: 0
-  competition_freq_steps: 1000
+  competition_freq_steps: 0
   conv_dropout: 0.1
   conv_kernel_size: 31
   ctc_phone_weight: 0.3
@@ -111,51 +111,51 @@ model:
     expert_dim: 1024
     ff_multiplier: 4
     group_id: 0
-    group_name: hubert_experts
-    num_experts: 4
-    specialization: hubert
-  - dropout: 0.1
-    expert_dim: 1024
-    ff_multiplier: 4
-    group_id: 1
-    group_name: wav2vec2_experts
-    num_experts: 4
-    specialization: wav2vec2
-  - dropout: 0.1
-    expert_dim: 1024
-    ff_multiplier: 4
-    group_id: 2
     group_name: vowels
     num_experts: 4
     specialization: vowels
   - dropout: 0.1
     expert_dim: 1024
     ff_multiplier: 4
-    group_id: 3
+    group_id: 1
     group_name: plosives
     num_experts: 4
     specialization: plosives
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 2
+    group_name: fricatives
+    num_experts: 4
+    specialization: fricatives
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 3
+    group_name: nasals
+    num_experts: 4
+    specialization: nasals
   group_expert_pretrained_paths:
-  - - ./checkpoints/pretrained/expert_1.pt
+  - - ./checkpoints/pretrained/expert_0.pt
     - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
     - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
     - ./checkpoints/pretrained/expert_1.pt
-  - - ./checkpoints/pretrained/expert_2.pt
     - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
+    - ./checkpoints/pretrained/expert_1.pt
     - ./checkpoints/pretrained/expert_2.pt
-    - ./checkpoints/pretrained/expert_2.pt
-  - - null
-    - null
-    - null
-    - null
-  - - null
-    - null
-    - null
-    - null
+    - ./checkpoints/pretrained/expert_3.pt
   hop_length: 256
   load_balance_weight: 0.01
   model_dim: 1024
-  moe_end_layer: 10
+  moe_end_layer: 9
   moe_start_layer: 3
   n_mels: 80
   norm_after_moe: true
@@ -170,7 +170,7 @@ model:
   total_experts: 16
   use_attention_pooling: false
   use_matchmaker: false
-  use_whisper_features: false
+  use_whisper_features: true
   vocab_size: 5000
   whisper_freeze: true
   whisper_model_name: openai/whisper-base
@@ -187,7 +187,7 @@ profiling:
   profile_forward: false
   profile_memory: false
 training:
-  batch_size: 8
+  batch_size: 4
   beta1: 0.9
   beta2: 0.999
   deterministic: false
@@ -199,25 +199,24 @@ training:
   gradient_accumulation_steps: 2
   keep_best_checkpoints: 2
   keep_last_n_checkpoints: 3
-  learning_rate: 0.0005
+  learning_rate: 0.0008
   log_every_n_steps: 10
   log_to_console: true
   max_grad_norm: 1.0
-  num_epochs: 50
+  num_epochs: 100
   optimizer: adamw
-  save_every_n_steps: 2000
+  save_every_n_steps: 5000
   seed: 42
-  total_steps: 50000
+  total_steps: 150000
   use_amp: true
   use_checkpoint: true
   use_compile: false
   wandb_entity: null
   wandb_mode: online
-  wandb_notes: Training with HuBERT + wav2vec2 pretrained experts
-  wandb_project: TeaMoE-pretrained
+  wandb_notes: Single A5000 24GB training
+  wandb_project: TeaMoE-single-gpu
   wandb_tags:
-  - pretrained
-  - hubert
-  - wav2vec2
-  warmup_steps: 2000
+  - single-gpu
+  - a5000
+  warmup_steps: 5000
   weight_decay: 0.01

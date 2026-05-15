@@ -1,6 +1,6 @@
 # ============================================================================
 # TeaMoE Single GPU Configuration
-# Optimized for NVIDIA A5000 24GB VRAM (Single GPU Training)
+# Optimized for NVIDIA A5000 24GB VRAM + Pretrained Experts (1024 dim)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -8,60 +8,44 @@
 # ----------------------------------------------------------------------------
 model:
   # -------------------- Encoder Backbone --------------------
-  # Slightly reduced for 24GB VRAM with safe headroom
-  num_layers: 20                 # Total transformer layers (reduced from 24)
-  moe_start_layer: 5            # First layer with MoE (0-indexed)
-  moe_end_layer: 15             # Last layer with MoE (exclusive)
-  model_dim: 896                # Hidden dimension (reduced from 1024)
-  num_heads: 14                 # Multi-head attention heads (must divide model_dim)
-  conv_kernel_size: 31          # Depthwise conv kernel
-  ff_multiplier: 4              # FFN expansion factor
+  num_layers: 12
+  moe_start_layer: 3
+  moe_end_layer: 9
+  model_dim: 1024              # Match pretrained expert input dim
+  num_heads: 16
+  conv_kernel_size: 31
+  ff_multiplier: 4
 
   # -------------------- MoE Configuration --------------------
-  num_groups: 8                 # Number of acoustic groups
-  experts_per_group: 4          # Experts per group
-  total_experts: 32             # num_groups × experts_per_group (8 × 4 = 32)
-  top_k_groups: 1               # Route to top-k groups during training
-  top_k_inference: 2            # Route to top-k groups during inference
+  num_groups: 4
+  experts_per_group: 4
+  total_experts: 16
+  top_k_groups: 1
+  top_k_inference: 2
 
   # -------------------- Shared Pretrained Experts --------------------
   # Pretrained experts from distillation (expert_0.pt to expert_3.pt)
+  # All have input_dim=1024, hidden_dim=4096
   group_expert_pretrained_paths:
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
-    - ["/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_0.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_1.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_2.pt",
-       "/home/an.dangthithuy/khanhtl/TeaMoE/checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
 
   # -------------------- Expert Pooling Strategy --------------------
-  use_attention_pooling: false  # Mean pooling (simpler, less VRAM)
+  use_attention_pooling: false
   attn_heads: 4
   attn_dropout: 0.1
 
@@ -70,63 +54,35 @@ model:
     - group_id: 0
       group_name: "vowels"
       num_experts: 4
-      expert_dim: 896
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "vowels"
     - group_id: 1
       group_name: "plosives"
       num_experts: 4
-      expert_dim: 896
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "plosives"
     - group_id: 2
       group_name: "fricatives"
       num_experts: 4
-      expert_dim: 896
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "fricatives"
     - group_id: 3
       group_name: "nasals"
       num_experts: 4
-      expert_dim: 896
+      expert_dim: 1024
       ff_multiplier: 4
       dropout: 0.1
       specialization: "nasals"
-    - group_id: 4
-      group_name: "male_speakers"
-      num_experts: 4
-      expert_dim: 896
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "male"
-    - group_id: 5
-      group_name: "female_speakers"
-      num_experts: 4
-      expert_dim: 896
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "female"
-    - group_id: 6
-      group_name: "clean_audio"
-      num_experts: 4
-      expert_dim: 896
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "clean"
-    - group_id: 7
-      group_name: "other_audio"
-      num_experts: 4
-      expert_dim: 896
-      ff_multiplier: 4
-      dropout: 0.1
-      specialization: "other"
 
   # -------------------- Decoder (RNN-T) --------------------
   vocab_size: 5000
-  decoder_hidden: 896           # Match model_dim
+  decoder_hidden: 1024
   decoder_layers: 2
   blank_id: 0
 
@@ -135,7 +91,7 @@ model:
   phone_blank_id: 0
 
   # -------------------- Loss Weights --------------------
-  competition_freq_steps: 0     # Disabled for single GPU
+  competition_freq_steps: 0
   distillation_weight: 0.1
   load_balance_weight: 0.01
   z_loss_weight: 0.001
@@ -158,16 +114,16 @@ model:
   norm_after_moe: true
 
   # -------------------- Whisper Feature Integration --------------------
-  use_whisper_features: true            # Enable Whisper encoder features
+  use_whisper_features: false
   whisper_model_name: "openai/whisper-base"
-  whisper_freeze: true                  # Freeze Whisper for stability
+  whisper_freeze: true
   whisper_proj_dropout: 0.1
 
 # ----------------------------------------------------------------------------
 # DATA CONFIGURATION
 # ----------------------------------------------------------------------------
 data:
-  manifests_dir: "/home/an.dangthithuy/khanhtl/TeaMoE/datasets/processed_data_librispeech/manifests"
+  manifests_dir: "./datasets/processed_data_librispeech/manifests"
   train_manifest: "train.jsonl"
   valid_manifest: "validation.jsonl"
   test_manifest: "test.jsonl"
@@ -176,19 +132,18 @@ data:
   n_mels: 80
   hop_length: 256
   win_length: 1024
-  max_duration: 25.0            # Shorter max duration for VRAM savings
+  max_duration: 30.0
   min_duration: 0.1
-  num_workers: 4                # Moderate workers for single GPU
+  num_workers: 4
   prefetch_factor: 2
   pin_memory: true
   persistent_workers: true
 
-  # Data augmentation (optional)
   augmentation:
     enabled: false
     speed_perturbation: [0.9, 1.0, 1.1]
     spec_augment:
-      enabled: true             # Enable SpecAugment for single GPU
+      enabled: true
       freq_mask_param: 20
       time_mask_param: 50
       num_masks: 2
@@ -197,14 +152,13 @@ data:
 # TRAINING CONFIGURATION
 # ----------------------------------------------------------------------------
 training:
-  num_epochs: 100               # Total training epochs
-  batch_size: 12                # Per-GPU batch size (conservative for 24GB)
-  learning_rate: 0.0008         # Slightly reduced LR for smaller model
-  warmup_steps: 5000            # Linear warmup steps
-  total_steps: 150000           # Total training steps
+  num_epochs: 100
+  batch_size: 8
+  learning_rate: 0.0005
+  warmup_steps: 5000
+  total_steps: 100000
 
-  # Optimization
-  gradient_accumulation_steps: 2  # Effective batch = 12 × 2 = 24
+  gradient_accumulation_steps: 2
   max_grad_norm: 1.0
   weight_decay: 0.01
   optimizer: "adamw"
@@ -212,32 +166,27 @@ training:
   beta2: 0.999
   eps: 1e-8
 
-  # Mixed precision & efficiency (CRITICAL for 24GB)
-  use_amp: true                 # FP16 mixed precision (required)
-  use_checkpoint: true          # Gradient checkpointing (required)
-  use_compile: false            # torch.compile can help but test first
+  use_amp: true
+  use_checkpoint: true
+  use_compile: false
 
-  # Evaluation & Logging
-  eval_every_n_steps: 500       # Run validation every 500 steps
-  log_every_n_steps: 10         # Log metrics every 10 steps
-  save_every_n_steps: 5000      # Save checkpoint every 5000 steps
-  keep_last_n_checkpoints: 3    # Fewer checkpoints for limited storage
-  keep_best_checkpoints: 2      # Keep best 2 checkpoints
+  eval_every_n_steps: 500
+  log_every_n_steps: 10
+  save_every_n_steps: 5000
+  keep_last_n_checkpoints: 3
+  keep_best_checkpoints: 2
 
-  # Early stopping
   early_stopping_patience: 10
   early_stopping_metric: "wer"
 
-  # Experiment tracking
   wandb_project: "TeaMoE-single-gpu"
   wandb_entity: null
-  wandb_tags: ["single-gpu", "a5000"]
-  wandb_notes: "Single A5000 24GB training"
+  wandb_tags: ["single-gpu", "a5000", "pretrained"]
+  wandb_notes: "A5000 24GB with pretrained experts"
   wandb_mode: "online"
   log_to_console: true
 
-  # Hardware
-  device: null                  # Auto-detect CUDA
+  device: null
   seed: 42
   deterministic: false
 
@@ -255,7 +204,7 @@ distillation:
   batch_size: 16
   learning_rate: 1e-3
   num_workers: 4
-  expert_dim: 896
+  expert_dim: 1024
   n_mels: 80
   loss: "mse"
 
@@ -279,7 +228,7 @@ inference:
 # COMPETITION CONFIGURATION
 # ----------------------------------------------------------------------------
 competition:
-  enabled: false                # Disabled for single GPU simplicity
+  enabled: false
   frequency_steps: 1000
   num_batches: 2
   alpha: 0.5
@@ -309,10 +258,10 @@ logging:
   plot_specialization_trend: false
 
 # ----------------------------------------------------------------------------
-# MULTI-GPU CONFIGURATION (Single GPU Mode)
+# MULTI-GPU CONFIGURATION
 # ----------------------------------------------------------------------------
 distributed:
-  enabled: false                # Single GPU mode
+  enabled: false
   backend: "nccl"
   init_method: "env://"
   world_size: 1
@@ -348,37 +297,6 @@ profiling:
   log_expert_weights: false
 
 # ============================================================================
-# USAGE INSTRUCTIONS
+# USAGE
 # ============================================================================
-#
-# 1. Train on single A5000 24GB:
-#    python train.py --config config/single_gpu.yaml
-#
-# 2. With WandB tracking:
-#    python train.py --config config/single_gpu.yaml
-#    (check wandb.ai for metrics)
-#
-# 3. Resume from checkpoint:
-#    python train.py --config config/single_gpu.yaml \
-#        --checkpoint checkpoints/single_gpu/best_model.pt
-#
-# 4. If OOM errors occur, reduce:
-#    - batch_size: 12 → 8
-#    - max_duration: 25 → 20
-#    - num_layers: 20 → 16
-#
-# 5. Estimated VRAM usage (with Whisper features):
-#    - Whisper encoder (frozen): ~0 GB (no gradients)
-#    - Model (FP16): ~1.5 GB
-#    - Gradients: ~1.5 GB
-#    - Optimizer: ~5 GB
-#    - Activations: ~8-10 GB (with checkpointing)
-#    - Data buffers: ~2 GB
-#    - Total: ~20-24 GB / 24 GB
-#
-# 6. Estimated training time (LibriSpeech 960h):
-#    - 1 epoch (~17K steps): ~12-18 hours
-#    - 50 epochs: ~10-15 days
-#    - 100 epochs: ~20-30 days
-#
-# ============================================================================
+# python train.py --config config/single_gpu.yaml

@@ -8,3 +8,4 @@ datasets/
 checkspoints/
 *.log
 *.pt
+load_dataset/LibriSpeech_download/

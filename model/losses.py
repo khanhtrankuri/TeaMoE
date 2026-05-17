@@ -28,12 +28,36 @@ class CombinedLoss:
         target_lengths: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute RNN-T loss (placeholder - needs specialized library)
-        logits: (batch, time, label_len, vocab_size+1)
-        For now, use mean of logits at each position as a simple loss.
+        Compute the ASR loss.
+
+        The memory-safe decoder path returns frame-wise logits shaped
+        (batch, time, vocab_size + 1), so train it with CTC. The full joint
+        RNN-T path returns (batch, time, label_len, vocab_size + 1); that path
+        still needs a specialized transducer loss implementation.
         """
-        # Placeholder: use a simple MSE-like loss on logits
-        return torch.mean(logits) * 0.0  # Return 0 for now
+        if logits.dim() == 3:
+            max_time = logits.shape[1]
+            input_lengths = input_lengths.to(logits.device).clamp(max=max_time)
+            target_lengths = target_lengths.to(logits.device)
+            targets = targets.to(logits.device)
+
+            log_probs = F.log_softmax(logits.float(), dim=-1).transpose(0, 1)
+            return F.ctc_loss(
+                log_probs,
+                targets,
+                input_lengths,
+                target_lengths,
+                blank=self.blank_id,
+                reduction='mean',
+                zero_infinity=True,
+            )
+
+        if logits.dim() == 4:
+            # Keep the graph valid for callers that opt into full joint logits,
+            # but avoid backpropagating through a fake zero-valued RNNT loss.
+            return logits.new_zeros(())
+
+        raise ValueError(f"Unsupported ASR logits shape: {tuple(logits.shape)}")
 
     def load_balance_loss(
         self,

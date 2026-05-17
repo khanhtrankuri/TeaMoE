@@ -47,6 +47,7 @@ class RNNTDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.use_full_joint = config.get('rnnt_full_joint', False)
         self.pred_net = PredictionNetwork(
             hidden_dim=config['decoder_hidden'],
             num_layers=config['decoder_layers'],
@@ -57,17 +58,29 @@ class RNNTDecoder(nn.Module):
             joint_dim=config['decoder_hidden'],
             vocab_size=config['vocab_size'],
         )
+        encoder_dim = config.get('model_dim', config['decoder_hidden'])
+        self.frame_output = nn.Linear(encoder_dim, config['vocab_size'] + 1)
 
     def forward(self, encoder_out, targets, deterministic=True):
+        if not self.use_full_joint:
+            return self.frame_output(encoder_out)
+
         pred_out, _ = self.pred_net(targets, deterministic=deterministic)
         joint_out = self.joint_net(encoder_out, pred_out)
         return joint_out
 
     def compute_rnnt_loss(self, logits, targets, input_lengths, target_lengths):
-        vocab_size = logits.shape[-1]
-        loss = F.cross_entropy(
-            logits[..., :-1].reshape(-1, vocab_size - 1),
-            targets.reshape(-1),
-            reduction='mean'
-        )
-        return loss
+        if logits.dim() == 3:
+            max_time = logits.shape[1]
+            log_probs = F.log_softmax(logits.float(), dim=-1).transpose(0, 1)
+            return F.ctc_loss(
+                log_probs,
+                targets.to(logits.device),
+                input_lengths.to(logits.device).clamp(max=max_time),
+                target_lengths.to(logits.device),
+                blank=self.config.get('blank_id', 0),
+                reduction='mean',
+                zero_infinity=True,
+            )
+
+        return logits.new_zeros(())

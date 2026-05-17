@@ -18,7 +18,7 @@ class TeaMoEModel(nn.Module):
             from transformers import WhisperModel
             whisper_model_name = config.get('whisper_model_name', 'openai/whisper-base')
             self.whisper = WhisperModel.from_pretrained(whisper_model_name)
-            self.whisper_dim = 512  # Whisper-base encoder output dimension
+            self.whisper_dim = getattr(self.whisper.config, 'd_model', 512)
             self.whisper_freeze = config.get('whisper_freeze', True)
 
             # Freeze Whisper parameters if requested
@@ -27,7 +27,7 @@ class TeaMoEModel(nn.Module):
                     param.requires_grad = False
 
             # Combined projection: mel + whisper features -> model_dim
-            combined_input_dim = config['n_mels'] + self.whisper_dim  # 80 + 512 = 592
+            combined_input_dim = config['n_mels'] + self.whisper_dim
             proj_dropout = config.get('whisper_proj_dropout', 0.1)
             self.combined_proj = nn.Sequential(
                 nn.Linear(combined_input_dim, config['model_dim']),
@@ -63,7 +63,7 @@ class TeaMoEModel(nn.Module):
             use_checkpoint: bool - gradient checkpointing
 
         Returns:
-            rnnt_logits: [B, U, T, vocab_size]
+            rnnt_logits: [B, T, vocab_size + 1] by default
             aux_outputs: dict with auxiliary outputs
         """
         if self.use_whisper:
@@ -71,47 +71,31 @@ class TeaMoEModel(nn.Module):
             # Whisper expects [B, n_mels, T] format (channels first)
             audio_for_whisper = audio_features.transpose(1, 2)  # [B, 80, T]
 
-            # Whisper has a length constraint (multiple of 3000 for pretrained)
-            # We handle this by padding to the next multiple of 3000, then cropping
+            # Whisper encoder expects exactly 3000 mel frames and downsamples time.
             expected_seq_length = 3000  # Whisper's expected mel length
             if T <= expected_seq_length:
-                # Pad to expected_seq_length
                 pad_len = expected_seq_length - T
                 audio_for_whisper = torch.nn.functional.pad(
                     audio_for_whisper, (0, pad_len), mode='constant', value=0
                 )
-                pad_needed = True
             else:
-                # If longer, we'll process in chunks or just let it fail?
-                # For simplicity, truncate to multiple of expected_seq_length
-                # In production, you'd implement chunked processing
-                new_T = (T // expected_seq_length) * expected_seq_length
-                if new_T < T:
-                    audio_for_whisper = audio_for_whisper[:, :, :new_T]
-                    pad_needed = False
-                else:
-                    pad_needed = False
+                audio_for_whisper = audio_for_whisper[:, :, :expected_seq_length]
 
             # Extract Whisper features (with or without gradients)
             with torch.set_grad_enabled(not self.whisper_freeze):
                 whisper_out = self.whisper.encoder(audio_for_whisper)
-                whisper_features = whisper_out.last_hidden_state  # [B, T_whisper, 512]
+                whisper_features = whisper_out.last_hidden_state  # [B, T_whisper, whisper_dim]
 
-            # Remove padding to match original T
-            if pad_needed:
-                whisper_features = whisper_features[:, :T, :]
-            else:
-                # If we truncated, we need to upsample back to original T
-                if whisper_features.shape[1] != T:
-                    whisper_features = torch.nn.functional.interpolate(
-                        whisper_features.transpose(1, 2),  # [B, 512, T_whisper]
-                        size=T,
-                        mode='linear',
-                        align_corners=False
-                    ).transpose(1, 2)  # [B, T, 512]
+            if whisper_features.shape[1] != T:
+                whisper_features = torch.nn.functional.interpolate(
+                    whisper_features.transpose(1, 2),  # [B, whisper_dim, T_whisper]
+                    size=T,
+                    mode='linear',
+                    align_corners=False
+                ).transpose(1, 2)  # [B, T, whisper_dim]
 
             # Concatenate mel and whisper features
-            combined = torch.cat([audio_features, whisper_features], dim=-1)  # [B, T, 80+512=592]
+            combined = torch.cat([audio_features, whisper_features], dim=-1)
             x = self.combined_proj(combined)  # [B, T, model_dim]
         else:
             # Standard path: mel only

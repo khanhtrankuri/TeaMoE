@@ -290,43 +290,36 @@ class HFModelWrapper(nn.Module):
         with torch.no_grad():
             # Special handling for Whisper - it needs Mel spectrograms
             if "whisper" in self.model_name.lower():
-                # WhisperProcessor converts waveform to log-Mel spectrogram
-                try:
-                    # Ensure waveforms are on CPU and float32
-                    audio_np = waveforms.cpu().numpy()
+                if self.processor is None:
+                    raise RuntimeError("Whisper feature extraction requires WhisperProcessor.")
 
-                    # For Whisper, we need to pad or truncate each sample to 30 seconds
-                    # 30 seconds @ 16kHz = 480,000 samples
-                    target_samples = 30 * 16000
+                # Whisper expects log-Mel input_features, not raw input_values.
+                audio_np = waveforms.detach().cpu().float().numpy()
+                lengths_np = lengths.detach().cpu().numpy()
+                target_samples = 30 * 16000
 
-                    processed_audio = []
-                    for wav in audio_np:
-                        if len(wav) < target_samples:
-                            # Pad to target length
-                            wav = np.pad(wav, (0, target_samples - len(wav)), mode='constant')
-                        else:
-                            # Truncate to target length
-                            wav = wav[:target_samples]
-                        processed_audio.append(wav)
+                processed_audio = []
+                for wav, length in zip(audio_np, lengths_np):
+                    wav = wav[: int(length)]
+                    if len(wav) < target_samples:
+                        wav = np.pad(wav, (0, target_samples - len(wav)), mode='constant')
+                    else:
+                        wav = wav[:target_samples]
+                    processed_audio.append(wav.astype(np.float32, copy=False))
 
-                    audio_np = np.array(processed_audio)
+                input_features = self.processor(
+                    processed_audio,
+                    sampling_rate=16000,
+                    return_tensors="pt",
+                    padding=True,
+                ).input_features
 
-                    inputs = self.processor(
-                        audio_np,
-                        sampling_rate=16000,
-                        return_tensors="pt",
-                        padding=True,
-                    ).input_features.to(self.device)
+                model_dtype = next(self.model.parameters()).dtype
+                input_features = input_features.to(self.device, dtype=model_dtype)
 
-                    # Call encoder directly to avoid needing decoder inputs
-                    encoder_outputs = self.model.encoder(input_features=inputs)
-                    features = encoder_outputs.last_hidden_state
-                    return features
-                except Exception as e:
-                    print(f"[WARN] Whisper processor failed: {e}, falling back to raw waveform")
-                    # Fallback: try with raw waveform
-                    inputs = waveforms.to(self.device)
-                    encoder_inputs = {"input_values": inputs}
+                # Call encoder directly to avoid needing decoder inputs.
+                encoder_outputs = self.model.encoder(input_features=input_features)
+                return encoder_outputs.last_hidden_state.float()
             elif not self.use_processor or self.processor is None:
                 # Direct waveform input (normalize to expected range)
                 inputs = waveforms.to(self.device)
@@ -605,23 +598,6 @@ def main():
     if len(train_dataset) < 10:
         print("[WARNING] Very small training set! Results may be poor.")
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn_distill,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        valid_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn_distill,
-        pin_memory=True,
-    )
-
     # Distill each model
     print(f"\nStarting distillation of {len(args.model_names)} models:")
     for i, model_name in enumerate(args.model_names):
@@ -636,6 +612,23 @@ def main():
             print(f"[INFO] Reduced batch_size to {batch_size} for Whisper to avoid OOM")
 
         try:
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=args.num_workers,
+                collate_fn=collate_fn_distill,
+                pin_memory=True,
+            )
+            val_loader = DataLoader(
+                valid_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                collate_fn=collate_fn_distill,
+                pin_memory=True,
+            )
+
             # Load HF wrapper
             hf_wrapper = HFModelWrapper(model_name, device=device.type)
 

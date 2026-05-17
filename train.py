@@ -7,6 +7,8 @@ import math
 import json
 import argparse
 import contextlib
+import random
+import re
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 
@@ -28,6 +30,58 @@ from model.losses import CombinedLoss
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 BLANK_ID = 0
+CTC_VOCAB = [" ", "'"] + list("abcdefghijklmnopqrstuvwxyz")
+TEXT_TO_ID = {ch: i + 1 for i, ch in enumerate(CTC_VOCAB)}
+ID_TO_TEXT = {i + 1: ch for i, ch in enumerate(CTC_VOCAB)}
+CTC_VOCAB_SIZE = len(CTC_VOCAB)
+
+
+def normalize_transcript(text: str) -> str:
+    """Normalize transcripts to the character CTC vocabulary."""
+    text = text.lower()
+    text = re.sub(r"[^a-z' ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def encode_transcript(text: str) -> List[int]:
+    normalized = normalize_transcript(text)
+    token_ids = [TEXT_TO_ID[ch] for ch in normalized if ch in TEXT_TO_ID]
+    return token_ids if token_ids else [TEXT_TO_ID[" "]]
+
+
+def decode_token_ids(token_ids: List[int]) -> str:
+    text = "".join(ID_TO_TEXT.get(int(token_id), "") for token_id in token_ids)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def apply_spec_augment(mel: torch.Tensor, spec_cfg: Dict) -> torch.Tensor:
+    """Apply simple frequency and time masking to normalized mel features."""
+    if mel.numel() == 0:
+        return mel
+
+    time_steps, n_mels = mel.shape
+    num_masks = int(spec_cfg.get("num_masks", 2))
+    freq_mask_param = int(spec_cfg.get("freq_mask_param", 20))
+    time_mask_param = int(spec_cfg.get("time_mask_param", 50))
+    augmented = mel.clone()
+
+    for _ in range(num_masks):
+        max_freq = min(freq_mask_param, n_mels)
+        if max_freq > 0:
+            width = random.randint(0, max_freq)
+            if width > 0:
+                start = random.randint(0, n_mels - width)
+                augmented[:, start:start + width] = 0.0
+
+        max_time = min(time_mask_param, time_steps)
+        if max_time > 0:
+            width = random.randint(0, max_time)
+            if width > 0:
+                start = random.randint(0, time_steps - width)
+                augmented[start:start + width, :] = 0.0
+
+    return augmented
 
 
 # ==================== Dataset ====================
@@ -41,6 +95,10 @@ class LibriSpeechDataset(Dataset):
         self.hop_length = config.get("hop_length", 256)
         self.win_length = config.get("win_length", 1024)
         self.max_duration = config.get("max_duration", 30.0)
+        self.augmentation = config.get("augmentation", {})
+        self.augmentation_enabled = bool(
+            is_train and self.augmentation.get("enabled", False)
+        )
 
         self.records = []
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -75,6 +133,16 @@ class LibriSpeechDataset(Dataset):
             print(f"[WARN] Error loading {audio_path}: {e}")
             waveform = np.zeros(self.sample_rate, dtype=np.float32)
 
+        if self.augmentation_enabled:
+            speeds = self.augmentation.get("speed_perturbation", [])
+            if speeds:
+                speed = float(random.choice(speeds))
+                if abs(speed - 1.0) > 1e-3 and waveform.size > 0:
+                    waveform = librosa.effects.time_stretch(
+                        y=waveform.astype(np.float32, copy=False),
+                        rate=speed,
+                    )
+
         # Mel spectrogram
         mel = librosa.feature.melspectrogram(
             y=waveform,
@@ -87,10 +155,12 @@ class LibriSpeechDataset(Dataset):
         mel = (mel - mel.mean()) / (mel.std() + 1e-8)
         mel = torch.from_numpy(mel).T.float()  # (T, n_mels)
 
-        # Tokenize ký tự
-        tokens = [ord(c) for c in text if ord(c) < 5000]
-        tokens = tokens if tokens else [1]
-        tokens = torch.tensor(tokens, dtype=torch.long)
+        if self.augmentation_enabled:
+            spec_cfg = self.augmentation.get("spec_augment", {})
+            if spec_cfg.get("enabled", False):
+                mel = apply_spec_augment(mel, spec_cfg)
+
+        tokens = torch.tensor(encode_transcript(text), dtype=torch.long)
 
         return {
             "audio_features": mel,
@@ -146,7 +216,7 @@ def collate_fn(batch: List[Dict]) -> Tuple[torch.Tensor, ...]:
 
 # ==================== Metrics ====================
 
-def compute_edit_distance(pred: List[int], target: List[int]) -> int:
+def compute_edit_distance(pred: List, target: List) -> int:
     """Levenshtein distance dùng cho WER/PER."""
     m, n = len(pred), len(target)
     dp = list(range(n + 1))
@@ -161,20 +231,24 @@ def compute_edit_distance(pred: List[int], target: List[int]) -> int:
     return dp[n]
 
 
-def compute_wer(predictions: List[List[int]], targets: List[List[int]]) -> float:
+def compute_wer(predictions: List[str], targets: List[str]) -> float:
     """Word Error Rate (%). Trả về giá trị 0–100."""
+    pred_words = [p.split() for p in predictions]
+    target_words = [t.split() for t in targets]
     total_errors = sum(
-        compute_edit_distance(p, t) for p, t in zip(predictions, targets)
+        compute_edit_distance(p, t) for p, t in zip(pred_words, target_words)
     )
-    total_words = sum(len(t) for t in targets)
+    total_words = sum(len(t) for t in target_words)
     return (total_errors / total_words * 100.0) if total_words > 0 else 0.0
 
 
-def compute_per(
-    phone_preds: List[List[int]], phone_targets: List[List[int]]
-) -> float:
-    """Phone Error Rate (%). Dùng cùng edit distance với WER."""
-    return compute_wer(phone_preds, phone_targets)
+def compute_cer(predictions: List[str], targets: List[str]) -> float:
+    """Character Error Rate (%)."""
+    total_errors = sum(
+        compute_edit_distance(list(p), list(t)) for p, t in zip(predictions, targets)
+    )
+    total_chars = sum(len(t) for t in targets)
+    return (total_errors / total_chars * 100.0) if total_chars > 0 else 0.0
 
 
 def compute_gini_coefficient(expert_usage_counts: np.ndarray) -> float:

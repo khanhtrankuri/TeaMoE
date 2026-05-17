@@ -85,6 +85,10 @@ model:
   decoder_hidden: 1024
   decoder_layers: 2
   blank_id: 0
+  # Full RNN-T joint logits scale as batch x time x target_len x vocab.
+  # Keep this false on 24GB GPUs; the default frame-wise CTC fallback trains
+  # ASR without materializing that huge tensor.
+  rnnt_full_joint: false
 
   # -------------------- Auxiliary Phone Head --------------------
   num_phones: 256
@@ -114,7 +118,7 @@ model:
   norm_after_moe: true
 
   # -------------------- Whisper Feature Integration --------------------
-  use_whisper_features: false
+  use_whisper_features: true
   whisper_model_name: "openai/whisper-base"
   whisper_freeze: true
   whisper_proj_dropout: 0.1
@@ -153,7 +157,7 @@ data:
 # ----------------------------------------------------------------------------
 training:
   num_epochs: 100
-  batch_size: 8
+  batch_size: 16
   learning_rate: 0.0005
   warmup_steps: 5000
   total_steps: 100000
@@ -180,13 +184,13 @@ training:
   early_stopping_metric: "wer"
 
   wandb_project: "TeaMoE-single-gpu"
-  wandb_entity: null
+  wandb_entity: "khanhtranpkntva-phenikaa-university"
   wandb_tags: ["single-gpu", "a5000", "pretrained"]
   wandb_notes: "A5000 24GB with pretrained experts"
   wandb_mode: "online"
   log_to_console: true
 
-  device: null
+  device: cuda:0
   seed: 42
   deterministic: false
 

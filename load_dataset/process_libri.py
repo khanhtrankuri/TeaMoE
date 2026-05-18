@@ -11,6 +11,7 @@ import tarfile
 import wave
 from pathlib import Path
 from urllib.request import urlretrieve
+from tqdm import tqdm
 
 from text_utils import normalize_transcript
 
@@ -21,11 +22,11 @@ _ALL_SUBSETS = {
     "test-clean": _DL_URL + "test-clean.tar.gz",
     "test-other": _DL_URL + "test-other.tar.gz",
     "train-clean-100": _DL_URL + "train-clean-100.tar.gz",
-    # "train-clean-360": _DL_URL + "train-clean-360.tar.gz",
-    # "train-other-500": _DL_URL + "train-other-500.tar.gz",
+    "train-clean-360": _DL_URL + "train-clean-360.tar.gz",
+    "train-other-500": _DL_URL + "train-other-500.tar.gz",
 }
 
-DEFAULT_TRAIN_SUBSETS = ("train-clean-100",)
+DEFAULT_TRAIN_SUBSETS = ("train-clean-100", "train-clean-360", "train-other-500")
 DEFAULT_VALID_SUBSETS = ("dev-clean", "dev-other")
 DEFAULT_TEST_SUBSETS = ("test-clean", "test-other")
 
@@ -571,7 +572,7 @@ def main() -> None:
 
     summary: dict[str, dict[str, object]] = {}
     all_records: list[dict[str, object]] = []
-    for split_name in ("train", "validation", "test"):
+    for split_name in tqdm(("train", "validation", "test"), desc="Processing splits"):
         print(f"Processing split '{split_name}'", flush=True)
         records, subset_summary = export_split(
             libri_root=libri_root,

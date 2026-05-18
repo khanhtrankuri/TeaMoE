@@ -8,6 +8,7 @@ This module provides functions to:
 - Track load balancing metrics per group
 """
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict

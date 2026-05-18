@@ -42,6 +42,10 @@ class LibriSpeechDataset(Dataset):
         self.win_length = config.get("win_length", 1024)
         self.max_duration = config.get("max_duration", 30.0)
 
+        # Pre-computed Whisper features config
+        self.use_precomputed_whisper = config.get("use_precomputed_whisper", False)
+        self.whisper_feature_dir = config.get("whisper_feature_dir", None)
+
         self.records = []
         with open(manifest_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -59,6 +63,8 @@ class LibriSpeechDataset(Dataset):
                 self.records.append(record)
 
         print(f"Loaded {len(self.records)} records from {manifest_path}")
+        if self.use_precomputed_whisper:
+            print(f"Using pre-computed Whisper features from: {self.whisper_feature_dir}")
 
     def __len__(self):
         return len(self.records)
@@ -68,14 +74,13 @@ class LibriSpeechDataset(Dataset):
         audio_path = record["audio_filepath"]
         text = record["text"]
 
-        # Tải audio
+        # Load mel spectrogram (always computed on-the-fly from audio)
         try:
             waveform, _ = librosa.load(audio_path, sr=self.sample_rate, mono=True)
         except Exception as e:
             print(f"[WARN] Error loading {audio_path}: {e}")
             waveform = np.zeros(self.sample_rate, dtype=np.float32)
 
-        # Mel spectrogram
         mel = librosa.feature.melspectrogram(
             y=waveform,
             sr=self.sample_rate,
@@ -83,17 +88,28 @@ class LibriSpeechDataset(Dataset):
             hop_length=self.hop_length,
             win_length=self.win_length,
         )
-        mel = librosa.power_to_db(mel, ref=np.max)  # (n_mels, T)
+        mel = librosa.power_to_db(mel, ref=np.max)
         mel = (mel - mel.mean()) / (mel.std() + 1e-8)
-        mel = torch.from_numpy(mel).T.float()  # (T, n_mels)
+        mel = torch.from_numpy(mel).T.float()
 
-        # Tokenize ký tự
+        # Load pre-computed Whisper features if enabled
+        whisper_features = None
+        if self.use_precomputed_whisper:
+            whisper_feat_path = record.get("whisper_feature_path")
+            if whisper_feat_path is not None and os.path.exists(whisper_feat_path):
+                try:
+                    whisper_features = torch.from_numpy(np.load(whisper_feat_path)).float()
+                except Exception as e:
+                    print(f"[WARN] Failed to load Whisper features from {whisper_feat_path}: {e}")
+
+        # Tokenize
         tokens = [ord(c) for c in text if ord(c) < 5000]
         tokens = tokens if tokens else [1]
         tokens = torch.tensor(tokens, dtype=torch.long)
 
         return {
             "audio_features": mel,
+            "whisper_features": whisper_features,
             "targets": tokens,
             "audio_path": audio_path,
         }
@@ -114,6 +130,30 @@ def collate_fn(batch: List[Dict]) -> Tuple[torch.Tensor, ...]:
         padded_features.append(feat)
 
     audio_features = torch.stack(padded_features)  # (B, T, n_mels)
+
+    # Handle pre-computed Whisper features (may have different time lengths)
+    whisper_features_list = []
+    for item in batch:
+        wf = item.get("whisper_features")
+        if wf is not None:
+            whisper_features_list.append(wf)
+        else:
+            # Create dummy tensor for padding alignment
+            # Whisper features are downsampled (T_features ≈ T_mel / 2)
+            expected_whisper_t = max_time // 2
+            whisper_features_list.append(torch.zeros(expected_whisper_t, 512))
+
+    # Pad Whisper features to same length
+    if whisper_features_list and whisper_features_list[0] is not None:
+        max_whisper_time = max(w.shape[0] for w in whisper_features_list)
+        padded_whisper = []
+        for w in whisper_features_list:
+            if w.shape[0] < max_whisper_time:
+                w = torch.cat([w, torch.zeros(max_whisper_time - w.shape[0], w.shape[1])], dim=0)
+            padded_whisper.append(w)
+        whisper_features = torch.stack(padded_whisper)  # (B, T_whisper, 512)
+    else:
+        whisper_features = None
 
     max_target = max(item["targets"].shape[0] for item in batch)
     padded_targets, target_lengths = [], []
@@ -141,6 +181,7 @@ def collate_fn(batch: List[Dict]) -> Tuple[torch.Tensor, ...]:
         input_lengths,
         target_lengths,
         phone_lengths,
+        whisper_features,
     )
 
 
@@ -280,6 +321,7 @@ def train_step(
         loss_dict: dict các thành phần loss (giá trị gốc, để log)
         aux_outputs: dict từ model (group_probs, group_ids, ...)
     """
+    batch_len = len(batch)
     (
         audio_features,
         targets,
@@ -287,7 +329,10 @@ def train_step(
         input_lengths,
         target_lengths,
         phone_lengths,
-    ) = batch
+    ) = batch[:6]
+
+    # Extract pre-computed Whisper features if present
+    whisper_features = batch[6] if batch_len > 6 else None
 
     audio_features = audio_features.to(device, non_blocking=True)
     targets = targets.to(device, non_blocking=True)
@@ -295,6 +340,10 @@ def train_step(
     input_lengths = input_lengths.to(device, non_blocking=True)
     target_lengths = target_lengths.to(device, non_blocking=True)
     phone_lengths = phone_lengths.to(device, non_blocking=True)
+
+    # Move Whisper features to device if present
+    if whisper_features is not None:
+        whisper_features = whisper_features.to(device, non_blocking=True)
 
     amp_ctx = (
         torch.amp.autocast("cuda")
@@ -309,6 +358,7 @@ def train_step(
             phone_targets,
             deterministic=False,
             use_checkpoint=use_checkpoint,
+            whisper_features=whisper_features,
         )
 
         group_probs = aux_outputs.get("group_probs")
@@ -367,6 +417,7 @@ def evaluate(
     model.eval()
     with torch.no_grad():
         for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
+            batch_len = len(batch)
             (
                 audio_features,
                 targets,
@@ -374,11 +425,18 @@ def evaluate(
                 input_lengths,
                 target_lengths,
                 phone_lengths,
-            ) = batch
+            ) = batch[:6]
+
+            # Extract pre-computed Whisper features if present
+            whisper_features = batch[6] if batch_len > 6 else None
 
             audio_features = audio_features.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             phone_targets = phone_targets.to(device, non_blocking=True)
+
+            # Move Whisper features to device if present
+            if whisper_features is not None:
+                whisper_features = whisper_features.to(device, non_blocking=True)
 
             rnnt_logits, aux_outputs = model(
                 audio_features,
@@ -386,6 +444,7 @@ def evaluate(
                 phone_targets,
                 deterministic=True,
                 use_checkpoint=use_checkpoint,
+                whisper_features=whisper_features,
             )
 
             phone_logits = aux_outputs.get("phone_logits")
@@ -638,6 +697,11 @@ def main():
     num_workers = data_cfg.get("num_workers", 0)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Merge model config into data config for Whisper features
+    # This allows Dataset to access use_precomputed_whisper and whisper_feature_dir
+    data_cfg["use_precomputed_whisper"] = model_cfg.get("use_precomputed_whisper", False)
+    data_cfg["whisper_feature_dir"] = model_cfg.get("whisper_feature_dir", None)
 
     # Lưu config để reproducibility
     with open(output_dir / "config.yaml", "w") as f:

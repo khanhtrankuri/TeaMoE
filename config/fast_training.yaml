@@ -1,0 +1,307 @@
+# ============================================================================
+# TeaMoE Fast Training Configuration (Với Pre-computed Whisper Features)
+# Tối ưu cho thời gian training
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# MODEL ARCHITECTURE
+# ----------------------------------------------------------------------------
+model:
+  # -------------------- Encoder Backbone --------------------
+  # Giảm kích thước model để training nhanh hơn
+  num_layers: 12                 # 24 → 12 (giảm 50% thời gian encoder)
+  moe_start_layer: 4            # 6 → 4 (bắt đầu MoE sớm hơn)
+  moe_end_layer: 10             # 18 → 10 (kết thúc MoE sớm hơn)
+  model_dim: 512                # 1024 → 512 (giảm 75% computation)
+  num_heads: 8                  # 16 → 8
+  conv_kernel_size: 15          # 31 → 15 (giảm convolution cost)
+  ff_multiplier: 4
+
+  # -------------------- MoE Configuration --------------------
+  num_groups: 4                 # 8 → 4 (giảm một nửa số nhóm)
+  experts_per_group: 3          # 4 → 3 (giảm số experts)
+  total_experts: 12
+  top_k_groups: 1
+  top_k_inference: 1
+
+  # -------------------- Shared Pretrained Experts --------------------
+  group_expert_pretrained_paths: null
+
+  # -------------------- Expert Pooling Strategy --------------------
+  use_attention_pooling: false  # Mean pooling nhanh hơn 10-20%
+
+  # -------------------- GROUP CONFIGURATIONS --------------------
+  group_configs:
+    - group_id: 0
+      group_name: "vowels"
+      num_experts: 3
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "vowels"
+    - group_id: 1
+      group_name: "plosives"
+      num_experts: 3
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "plosives"
+    - group_id: 2
+      group_name: "fricatives"
+      num_experts: 3
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "fricatives"
+    - group_id: 3
+      group_name: "other"
+      num_experts: 3
+      expert_dim: 512
+      ff_multiplier: 4
+      dropout: 0.1
+      specialization: "other"
+
+  # -------------------- Decoder (RNNT) --------------------
+  vocab_size: 1000              # Smaller vocab
+  decoder_hidden: 512
+  decoder_layers: 2
+  blank_id: 0
+
+  # -------------------- Auxiliary Phone Head --------------------
+  num_phones: 128
+  phone_blank_id: 0
+
+  # -------------------- Loss Weights --------------------
+  competition_freq_steps: 0     # Tắt competition
+  distillation_weight: 0.0      # Tắt distillation
+  load_balance_weight: 0.005    # Giảm
+  z_loss_weight: 0.0005         # Giảm
+  ctc_phone_weight: 0.0         # Tắt phone head (giảm computation)
+
+  # -------------------- Audio Preprocessing --------------------
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+
+  # -------------------- Regularization --------------------
+  dropout: 0.1
+  attention_dropout: 0.1
+  conv_dropout: 0.1
+
+  # -------------------- OTHER OPTIONS --------------------
+  alpha: 0.5
+  use_matchmaker: false
+  norm_after_moe: true
+
+  # ----------------------------------------------------------------------------
+  # WHISPER FEATURE CONFIGURATION
+  # ----------------------------------------------------------------------------
+  # TẮT: compute Whisper features on-the-fly (chậm)
+  use_whisper_features: false
+
+  # BẬT: sử dụng Whisper features đã được pre-compute (nhanh hơn nhiều)
+  use_precomputed_whisper: true  # <<< CHÍNH CẦN CHÂN ĐÂY
+
+  # Đường dẫn đến thư mục chứa Whisper features đã pre-compute
+  # Các file .npy sẽ được tạo bởi precompute_whisper_features.py
+  whisper_feature_dir: "datasets/whisper_features"
+
+  # Whisper config (chỉ dùng khi dùng precomputed)
+  whisper_model_name: "openai/whisper-base"
+  whisper_freeze: true
+  whisper_proj_dropout: 0.1
+
+# ----------------------------------------------------------------------------
+# DATA CONFIGURATION
+# ----------------------------------------------------------------------------
+data:
+  manifests_dir: "/home/an.dangthithuy/khanhtl/TeaMoE/datasets/processed_data_librispeech/manifests"
+  train_manifest: "train.jsonl"
+  valid_manifest: "validation.jsonl"
+  test_manifest: "test.jsonl"
+
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 256
+  win_length: 1024
+  max_duration: 15.0            # Giảm từ 30s → 15s (giảm thời gian processing 50%)
+  min_duration: 0.1
+
+  # DataLoader config
+  num_workers: 8
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+
+  # Pre-computed Whisper features config
+  use_precomputed_whisper: true
+  whisper_feature_dir: "datasets/whisper_features"
+
+# ----------------------------------------------------------------------------
+# TRAINING CONFIGURATION
+# ----------------------------------------------------------------------------
+training:
+  num_epochs: 20                # 100 → 20 (giảm số epochs)
+  batch_size: 64                # 32 → 64 (tăng batch để giảm iterations)
+  learning_rate: 0.001
+  warmup_steps: 2000            # 5000 → 2000
+  total_steps: 50000            # 200000 → 50000
+
+  # Optimization
+  gradient_accumulation_steps: 1  # Không cần accumulation với batch lớn
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  optimizer: "adamw"
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+
+  # Mixed precision & efficiency
+  use_amp: true                 # FP16 mixed precision (giữ nguyên)
+  use_checkpoint: false         # Tắt checkpointing để có thể dùng torch.compile
+  use_compile: true             # Bật torch.compile (+10-20% tốc độ)
+
+  # Evaluation & Logging
+  eval_every_n_steps: 2000      # 500 → 2000 (giảm tần suất eval)
+  log_every_n_steps: 10
+  save_every_n_steps: 10000     # 5000 → 10000
+  keep_last_n_checkpoints: 3
+  keep_best_checkpoints: 2
+
+  # Early stopping
+  early_stopping_patience: 5
+  early_stopping_metric: "wer"
+
+  # Experiment tracking
+  wandb_project: "TeaMoE-fast"
+  wandb_entity: null
+  wandb_tags: ["fast", "precomputed-whisper"]
+  wandb_notes: "Fast training with pre-computed Whisper features"
+  wandb_mode: "online"
+  log_to_console: true
+
+  device: null
+  seed: 42
+  deterministic: false
+
+# ----------------------------------------------------------------------------
+# DISTILLATION CONFIGURATION
+# ----------------------------------------------------------------------------
+distillation:
+  hf_models:
+    - "facebook/mms-300m"
+    - "facebook/hubert-large-ls960-ft"
+    - "facebook/wav2vec2-large-xlsr-53"
+    - "openai/whisper-large-v3"
+
+  epochs: 5
+  batch_size: 32
+  learning_rate: 1e-3
+  num_workers: 4
+  expert_dim: 512
+  n_mels: 80
+  loss: "mse"
+
+# ----------------------------------------------------------------------------
+# INFERENCE CONFIGURATION
+# ----------------------------------------------------------------------------
+inference:
+  decoder_type: "greedy"
+  beam_size: 5
+  beam_alpha: 0.6
+  beam_beta: 0.0
+  rnnt_blank_id: 0
+  rnnt_max_symbols_per_step: 10
+  apply_lm: false
+  lm_weight: 0.5
+  am_weight: 0.5
+  return_timestamps: false
+  return_token_timestamps: false
+
+# ----------------------------------------------------------------------------
+# COMPETITION CONFIGURATION
+# ----------------------------------------------------------------------------
+competition:
+  enabled: false               # Tắt competition cho training nhanh
+  frequency_steps: 1000
+  num_batches: 2
+  alpha: 0.5
+  use_matchmaker: false
+  mutation_rate: 0.01
+  elite_count: 1
+
+# ----------------------------------------------------------------------------
+# LOGGING & METRICS
+# ----------------------------------------------------------------------------
+logging:
+  log_train_loss: true
+  log_val_metrics: true
+  log_gradient_norm: false     # Tắt để giảm compute
+  log_expert_usage: false      # Tắt để giảm compute
+  log_specialization: false
+  log_learning_rate: true
+
+  compute_wer: true
+  compute_per: false           # Tắt PER evaluation
+  compute_gini: false          # Tắt Gini computation
+  compute_expert_diversity: false  # Tắt cosine distance
+  compute_specialization: false
+
+  plot_expert_usage: false
+  plot_group_distribution: false
+  plot_specialization_trend: false
+
+# ----------------------------------------------------------------------------
+# CHECKPOINTING
+# ----------------------------------------------------------------------------
+checkpoint:
+  save_dir: "checkpoints/fast"
+  save_optimizer: true
+  save_scheduler: true
+  save_rng_state: true
+  save_best_only: true         # Chỉ lưu model tốt nhất (giảm disk I/O)
+  best_metric: "wer"
+  mode: "min"
+  resume_from_checkpoint: null
+  load_optimizer_state: true
+  load_scheduler_state: true
+  strict: true
+
+# ----------------------------------------------------------------------------
+# USAGE INSTRUCTIONS
+# ----------------------------------------------------------------------------
+#
+# 1. PRE-COMPUTE WHISPER FEATURES (chạy 1 lần duy nhất):
+#
+#    python precompute_whisper_features.py \
+#        --manifest datasets/processed_data_librispeech/manifests/train.jsonl \
+#        --output-manifest datasets/processed_data_librispeech/manifests/train_with_whisper.jsonl \
+#        --output-dir datasets/whisper_features \
+#        --whisper-model openai/whisper-base \
+#        --device cuda
+#
+#    python precompute_whisper_features.py \
+#        --manifest datasets/processed_data_librispeech/manifests/validation.jsonl \
+#        --output-manifest datasets/processed_data_librispeech/manifests/validation_with_whisper.jsonl \
+#        --output-dir datasets/whisper_features \
+#        --whisper-model openai/whisper-base \
+#        --device cuda
+#
+# 2. TRAIN MODEL:
+#
+#    python train.py --config config/fast_training.yaml \
+#        --train-manifest datasets/processed_data_librispeech/manifests/train_with_whisper.jsonl \
+#        --valid-manifest datasets/processed_data_librispeech/manifests/validation_with_whisper.jsonl
+#
+# 3. SPEEDUP EXPECTED:
+#
+#    - Pre-computed Whisper: ~2-3 seconds/audio (instead of ~8-10s on-the-fly)
+#    - torch.compile: +10-20% speedup
+#    - Reduced model size: ~50% faster forward pass
+#    - Larger batch: Fewer iterations per epoch
+#    - Reduced eval frequency: Less time spent on validation
+#
+#    TOTAL SPEEDUP: ~3-4x faster training
+#
+# ============================================================================

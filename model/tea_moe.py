@@ -12,9 +12,10 @@ class TeaMoEModel(nn.Module):
         super().__init__()
         self.config = config
         self.use_whisper = config.get('use_whisper_features', False)
+        self.use_precomputed_whisper = config.get('use_precomputed_whisper', False)
 
-        # Initialize Whisper encoder if enabled
-        if self.use_whisper:
+        # Initialize Whisper encoder only if NOT using precomputed features
+        if self.use_whisper and not self.use_precomputed_whisper:
             from transformers import WhisperModel
             whisper_model_name = config.get('whisper_model_name', 'openai/whisper-base')
             self.whisper = WhisperModel.from_pretrained(whisper_model_name)
@@ -28,6 +29,14 @@ class TeaMoEModel(nn.Module):
 
             # Combined projection: mel + whisper features -> model_dim
             combined_input_dim = config['n_mels'] + self.whisper_dim
+            proj_dropout = config.get('whisper_proj_dropout', 0.1)
+            self.combined_proj = nn.Sequential(
+                nn.Linear(combined_input_dim, config['model_dim']),
+                nn.Dropout(proj_dropout) if proj_dropout > 0 else nn.Identity()
+            )
+        elif self.use_precomputed_whisper:
+            # Pre-computed features path: mel + precomputed whisper (512 dim) -> model_dim
+            combined_input_dim = config['n_mels'] + 512
             proj_dropout = config.get('whisper_proj_dropout', 0.1)
             self.combined_proj = nn.Sequential(
                 nn.Linear(combined_input_dim, config['model_dim']),
@@ -53,7 +62,8 @@ class TeaMoEModel(nn.Module):
             blank_id=config['blank_id']
         )
 
-    def forward(self, audio_features, targets, phone_targets=None, deterministic=True, use_checkpoint=False):
+    def forward(self, audio_features, targets, phone_targets=None, deterministic=True,
+                use_checkpoint=False, whisper_features=None):
         """
         Args:
             audio_features: [B, T, n_mels] - mel spectrogram (time-first format)
@@ -61,12 +71,35 @@ class TeaMoEModel(nn.Module):
             phone_targets: [B, U] - phone ids (optional)
             deterministic: bool - routing mode
             use_checkpoint: bool - gradient checkpointing
+            whisper_features: [B, T_w, 512] - pre-computed Whisper features (optional)
 
         Returns:
             rnnt_logits: [B, T, vocab_size + 1] by default
             aux_outputs: dict with auxiliary outputs
         """
-        if self.use_whisper:
+        if self.use_precomputed_whisper:
+            # Use pre-computed Whisper features (loaded from disk)
+            if whisper_features is None:
+                # Fallback to mel-only if no features provided
+                x = self.input_proj(audio_features)
+            else:
+                # Interpolate Whisper features to match mel time dimension
+                B, T, _ = audio_features.shape
+                T_w = whisper_features.shape[1]
+                if T_w != T:
+                    whisper_features = torch.nn.functional.interpolate(
+                        whisper_features.transpose(1, 2),  # [B, 512, T_w]
+                        size=T,
+                        mode='linear',
+                        align_corners=False
+                    ).transpose(1, 2)  # [B, T, 512]
+
+                # Concatenate mel and pre-computed whisper features
+                combined = torch.cat([audio_features, whisper_features], dim=-1)
+                x = self.combined_proj(combined)  # [B, T, model_dim]
+
+        elif self.use_whisper:
+            # Compute Whisper features on-the-fly (original behavior)
             B, T, _ = audio_features.shape
             # Whisper expects [B, n_mels, T] format (channels first)
             audio_for_whisper = audio_features.transpose(1, 2)  # [B, 80, T]

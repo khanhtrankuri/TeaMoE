@@ -32,7 +32,7 @@ data:
     - 1.1
   hop_length: 256
   manifests_dir: ./datasets/processed_data_librispeech/manifests
-  max_duration: 30.0
+  max_duration: 25.0
   min_duration: 0.1
   n_mels: 80
   num_workers: 4
@@ -42,7 +42,10 @@ data:
   sample_rate: 16000
   test_manifest: test.jsonl
   train_manifest: train.jsonl
+  use_precomputed_whisper: true
   valid_manifest: validation.jsonl
+  vocab_size: 5000
+  whisper_feature_dir: datasets/whisper_features
   win_length: 1024
 distillation:
   batch_size: 16
@@ -94,12 +97,12 @@ model:
   alpha: 0.5
   attention_dropout: 0.1
   attn_dropout: 0.1
-  attn_heads: 4
+  attn_heads: 8
   blank_id: 0
   competition_freq_steps: 0
   conv_dropout: 0.1
   conv_kernel_size: 31
-  ctc_phone_weight: 0.3
+  ctc_phone_weight: 0.0
   decoder_hidden: 1024
   decoder_layers: 2
   distillation_weight: 0.1
@@ -135,7 +138,51 @@ model:
     group_name: nasals
     num_experts: 4
     specialization: nasals
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 4
+    group_name: male_speakers
+    num_experts: 4
+    specialization: male
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 5
+    group_name: female_speakers
+    num_experts: 4
+    specialization: female
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 6
+    group_name: clean_audio
+    num_experts: 4
+    specialization: clean
+  - dropout: 0.1
+    expert_dim: 1024
+    ff_multiplier: 4
+    group_id: 7
+    group_name: other_audio
+    num_experts: 4
+    specialization: other
   group_expert_pretrained_paths:
+  - - ./checkpoints/pretrained/expert_0.pt
+    - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
+    - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
+    - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
+  - - ./checkpoints/pretrained/expert_0.pt
+    - ./checkpoints/pretrained/expert_1.pt
+    - ./checkpoints/pretrained/expert_2.pt
+    - ./checkpoints/pretrained/expert_3.pt
   - - ./checkpoints/pretrained/expert_0.pt
     - ./checkpoints/pretrained/expert_1.pt
     - ./checkpoints/pretrained/expert_2.pt
@@ -159,20 +206,23 @@ model:
   moe_start_layer: 3
   n_mels: 80
   norm_after_moe: true
-  num_groups: 4
+  num_groups: 8
   num_heads: 16
-  num_layers: 12
+  num_layers: 16
   num_phones: 256
   phone_blank_id: 0
   rnnt_full_joint: false
   sample_rate: 16000
+  time_reduction_factor: 4
   top_k_groups: 1
   top_k_inference: 2
-  total_experts: 16
-  use_attention_pooling: false
+  total_experts: 32
+  use_attention_pooling: true
   use_matchmaker: false
+  use_precomputed_whisper: true
   use_whisper_features: true
   vocab_size: 5000
+  whisper_feature_dir: datasets/whisper_features
   whisper_freeze: true
   whisper_model_name: openai/whisper-base
   whisper_proj_dropout: 0.1
@@ -188,7 +238,7 @@ profiling:
   profile_forward: false
   profile_memory: false
 training:
-  batch_size: 16
+  batch_size: 32
   beta1: 0.9
   beta2: 0.999
   deterministic: false
@@ -197,14 +247,14 @@ training:
   early_stopping_patience: 10
   eps: 1e-8
   eval_every_n_steps: 500
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   keep_best_checkpoints: 2
   keep_last_n_checkpoints: 3
   learning_rate: 0.0005
   log_every_n_steps: 10
   log_to_console: true
   max_grad_norm: 1.0
-  num_epochs: 100
+  num_epochs: 50
   optimizer: adamw
   save_every_n_steps: 5000
   seed: 42

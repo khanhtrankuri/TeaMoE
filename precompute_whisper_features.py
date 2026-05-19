@@ -11,40 +11,47 @@ import json
 import torch
 import numpy as np
 from pathlib import Path
+from typing import Optional
 from tqdm import tqdm
 import argparse
 import librosa
-from transformers import WhisperModel
+from transformers import WhisperFeatureExtractor, WhisperModel
 
 
-def extract_whisper_features(audio_path: str, sample_rate: int = 16000) -> np.ndarray:
-    """Extract Whisper encoder features cho 1 audio file.
+def resolve_audio_path(record: dict, manifest_path: str) -> Optional[str]:
+    """Resolve stale manifest paths after moving load_dataset -> datasets."""
+    candidates = []
+    audio_path = record.get("audio_filepath")
+    if audio_path:
+        candidates.append(audio_path)
+        candidates.append(audio_path.replace("load_dataset", "datasets", 1))
+
+    audio_relpath = record.get("audio_relpath")
+    if audio_relpath:
+        manifest_dir = Path(manifest_path).resolve().parent
+        dataset_root = manifest_dir.parent
+        candidates.append(str(dataset_root / audio_relpath))
+        candidates.append(str(Path("datasets/processed_data_librispeech") / audio_relpath))
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    return audio_path
+
+
+def load_audio_for_whisper(audio_path: str, sample_rate: int = 16000) -> np.ndarray:
+    """Load and normalize one audio file for Whisper feature extraction.
 
     Args:
         audio_path: Path to audio file
         sample_rate: Sample rate (must be 16kHz for Whisper)
 
     Returns:
-        Whisper features: [T, whisper_dim] where whisper_dim=512 for whisper-base
+        Waveform array at the requested sample rate
     """
-    # Load audio
     waveform, _ = librosa.load(audio_path, sr=sample_rate, mono=True)
-
-    # Whisper expects log-Mel spectrogram with specific parameters
-    # Transformers Whisper expects:
-    # - 30-second audio at 16kHz
-    # - 80-channel log-Mel spectrogram
-
-    # Pad or trim to 30 seconds
-    target_length = sample_rate * 30  # 480000 samples
-    if len(waveform) < target_length:
-        waveform = np.pad(waveform, (0, target_length - len(waveform)))
-    else:
-        waveform = waveform[:target_length]
-
-    # Normalize (similar to Whisper processor)
-    waveform = waveform / np.max(np.abs(waveform) + 1e-8)
-
+    waveform = waveform / (np.max(np.abs(waveform)) + 1e-8)
     return waveform
 
 
@@ -53,7 +60,8 @@ def process_manifest_with_whisper(
     output_manifest_path: str,
     output_dir: str,
     whisper_model_name: str = "openai/whisper-base",
-    device: str = "cuda"
+    device: str = "cuda",
+    sample_rate: int = 16000,
 ):
     """Process manifest và extract Whisper features cho tất cả audio.
 
@@ -63,9 +71,11 @@ def process_manifest_with_whisper(
         output_dir: Directory to save Whisper features as .npy files
         whisper_model_name: Whisper model name
         device: Device to run Whisper on
+        sample_rate: Audio sample rate for loading and feature extraction
     """
     # Load Whisper model
     print(f"Loading Whisper model: {whisper_model_name}")
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(whisper_model_name)
     model = WhisperModel.from_pretrained(whisper_model_name)
     model = model.to(device)
     model.eval()
@@ -90,7 +100,7 @@ def process_manifest_with_whisper(
     # Process each record
     updated_records = []
     for record in tqdm(records, desc="Extracting Whisper features"):
-        audio_path = record["audio_filepath"]
+        audio_path = resolve_audio_path(record, manifest_path)
 
         if not os.path.exists(audio_path):
             print(f"[WARN] Audio not found: {audio_path}")
@@ -110,13 +120,17 @@ def process_manifest_with_whisper(
 
         # Extract audio
         try:
-            waveform = extract_whisper_features(audio_path)
-            waveform = torch.from_numpy(waveform).to(device)
-            waveform = waveform.unsqueeze(0)  # [1, T]
+            waveform = load_audio_for_whisper(audio_path, sample_rate=sample_rate)
+            inputs = feature_extractor(
+                waveform,
+                sampling_rate=sample_rate,
+                return_tensors="pt",
+            )
+            input_features = inputs.input_features.to(device)  # [1, 80, 3000]
 
             # Extract Whisper encoder features
             with torch.no_grad():
-                encoder_output = model.encoder(waveform)
+                encoder_output = model.encoder(input_features)
                 features = encoder_output.last_hidden_state  # [1, T_features, whisper_dim]
                 # T_features = 1500 for 30s audio (downsampled by 2)
 
@@ -124,6 +138,7 @@ def process_manifest_with_whisper(
             features_np = features.cpu().numpy()[0]  # [T_features, whisper_dim]
             np.save(whisper_feat_path, features_np)
 
+            record["audio_filepath"] = audio_path
             record["whisper_feature_path"] = str(whisper_feat_path)
             record["whisper_feature_shape"] = list(features_np.shape)
 
@@ -154,6 +169,8 @@ def main():
     parser.add_argument("--whisper-model", type=str, default="openai/whisper-base",
                         help="Whisper model name")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
+    parser.add_argument("--sample-rate", type=int, default=16000,
+                        help="Sample rate for audio loading")
 
     args = parser.parse_args()
 
@@ -162,7 +179,8 @@ def main():
         output_manifest_path=args.output_manifest,
         output_dir=args.output_dir,
         whisper_model_name=args.whisper_model,
-        device=args.device
+        device=args.device,
+        sample_rate=args.sample_rate,
     )
 
 

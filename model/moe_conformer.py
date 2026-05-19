@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Optional
 from .expert import ExpertGroup
 
@@ -40,7 +41,7 @@ class ConformerLayer(nn.Module):
 
         residual = x
         x = self.attn_norm(x)
-        attn_out, _ = self.self_attn(x, x, x)
+        attn_out, _ = self.self_attn(x, x, x, need_weights=False)
         x = self.attn_dropout(attn_out)
         x = x + residual
 
@@ -62,15 +63,24 @@ class MoEConformerLayer(nn.Module):
         super().__init__()
         self.config = config
         self.expert_groups = nn.ModuleList(expert_groups)
+        dropout = config.get('dropout', 0.1)
+        conv_dropout = config.get('conv_dropout', dropout)
+        attn_dropout = config.get('attention_dropout', dropout)
+        self.norm_after_moe = config.get('norm_after_moe', False)
         self.conv_norm = nn.LayerNorm(config['model_dim'])
         self.conv = nn.Conv1d(config['model_dim'], config['model_dim'],
                                kernel_size=config['conv_kernel_size'], padding=config['conv_kernel_size']//2)
         self.conv_gelu = nn.GELU()
-        self.conv_dropout = nn.Dropout(0.1)
+        self.conv_dropout = nn.Dropout(conv_dropout)
         self.attn_norm = nn.LayerNorm(config['model_dim'])
-        self.self_attn = nn.MultiheadAttention(config['model_dim'], config['num_heads'], dropout=0.1, batch_first=True)
-        self.attn_dropout = nn.Dropout(0.1)
-        self.moe_dropout = nn.Dropout(0.1)
+        self.self_attn = nn.MultiheadAttention(
+            config['model_dim'],
+            config['num_heads'],
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.attn_dropout = nn.Dropout(attn_dropout)
+        self.moe_dropout = nn.Dropout(dropout)
 
     def _forward_impl(self, x, group_ids, deterministic=True, use_checkpoint=False):
         residual = x
@@ -84,7 +94,7 @@ class MoEConformerLayer(nn.Module):
 
         residual = x
         x = self.attn_norm(x)
-        attn_out, _ = self.self_attn(x, x, x)
+        attn_out, _ = self.self_attn(x, x, x, need_weights=False)
         x = self.attn_dropout(attn_out)
         x = x + residual
 
@@ -107,11 +117,13 @@ class MoEConformerLayer(nn.Module):
         # Scatter back - need to ensure output shapes match
         result = torch.zeros_like(x_flat)
         for mask, out in zip(masks, outputs):
-            result[mask] = out
+            result[mask] = out.to(dtype=result.dtype, device=result.device)
         x = result.reshape(batch_size, seq_len, model_dim)
 
         x = self.moe_dropout(x)
         x = x + residual
+        if self.norm_after_moe:
+            x = F.layer_norm(x, (model_dim,))
         return x
 
     def forward(self, x, group_ids, deterministic=True, use_checkpoint=False):
@@ -151,6 +163,7 @@ class MoEConformerEncoder(nn.Module):
                 num_heads=config['num_heads'],
                 ff_multiplier=config['ff_multiplier'],
                 conv_kernel_size=config['conv_kernel_size'],
+                dropout=config.get('dropout', 0.1),
             )
             for _ in range(config['moe_start_layer'])
         ])
@@ -164,6 +177,7 @@ class MoEConformerEncoder(nn.Module):
                 num_heads=config['num_heads'],
                 ff_multiplier=config['ff_multiplier'],
                 conv_kernel_size=config['conv_kernel_size'],
+                dropout=config.get('dropout', 0.1),
             )
             for _ in range(config['moe_end_layer'], config['num_layers'])
         ])

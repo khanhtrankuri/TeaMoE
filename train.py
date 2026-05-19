@@ -30,6 +30,36 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 BLANK_ID = 0
 
 
+# ==================== Numerical Debug Helpers ====================
+
+def tensor_debug_summary(name: str, tensor: torch.Tensor) -> str:
+    value = tensor.detach().float()
+    finite_mask = torch.isfinite(value)
+    finite = value[finite_mask]
+    nonfinite = int((~finite_mask).sum().item())
+    if finite.numel() == 0:
+        return f"{name}: shape={tuple(tensor.shape)}, nonfinite={nonfinite}, no finite values"
+    return (
+        f"{name}: shape={tuple(tensor.shape)}, nonfinite={nonfinite}, "
+        f"min={finite.min().item():.6g}, max={finite.max().item():.6g}, "
+        f"mean={finite.mean().item():.6g}"
+    )
+
+
+def assert_finite_tensor(name: str, tensor: Optional[torch.Tensor]) -> None:
+    if tensor is None:
+        return
+    if not torch.isfinite(tensor.detach()).all():
+        raise FloatingPointError(tensor_debug_summary(name, tensor))
+
+
+def find_first_nonfinite_parameter(model: nn.Module) -> Optional[str]:
+    for name, param in model.named_parameters():
+        if param is not None and not torch.isfinite(param.detach()).all():
+            return tensor_debug_summary(name, param)
+    return None
+
+
 # ==================== Dataset ====================
 
 class LibriSpeechDataset(Dataset):
@@ -41,6 +71,8 @@ class LibriSpeechDataset(Dataset):
         self.hop_length = config.get("hop_length", 256)
         self.win_length = config.get("win_length", 1024)
         self.max_duration = config.get("max_duration", 30.0)
+        self.vocab_size = config.get("vocab_size", 5000)
+        self.check_finite = config.get("check_finite", False)
 
         # Pre-computed Whisper features config
         self.use_precomputed_whisper = config.get("use_precomputed_whisper", False)
@@ -81,15 +113,23 @@ class LibriSpeechDataset(Dataset):
             print(f"[WARN] Error loading {audio_path}: {e}")
             waveform = np.zeros(self.sample_rate, dtype=np.float32)
 
-        mel = librosa.feature.melspectrogram(
-            y=waveform,
-            sr=self.sample_rate,
-            n_mels=self.n_mels,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-        )
-        mel = librosa.power_to_db(mel, ref=np.max)
-        mel = (mel - mel.mean()) / (mel.std() + 1e-8)
+        try:
+            mel = librosa.feature.melspectrogram(
+                y=waveform,
+                sr=self.sample_rate,
+                n_mels=self.n_mels,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+            )
+            mel = librosa.power_to_db(mel, ref=np.max)
+            mel = (mel - mel.mean()) / (mel.std() + 1e-8)
+        except Exception as e:
+            print(f"[WARN] Error computing mel for {audio_path}: {e}")
+            frames = max(1, int(math.ceil(len(waveform) / max(1, self.hop_length))))
+            mel = np.zeros((self.n_mels, frames), dtype=np.float32)
+        if self.check_finite and not np.isfinite(mel).all():
+            print(f"[WARN] Non-finite mel values in {audio_path}; replacing with zeros")
+            mel = np.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
         mel = torch.from_numpy(mel).T.float()
 
         # Load pre-computed Whisper features if enabled
@@ -98,12 +138,21 @@ class LibriSpeechDataset(Dataset):
             whisper_feat_path = record.get("whisper_feature_path")
             if whisper_feat_path is not None and os.path.exists(whisper_feat_path):
                 try:
-                    whisper_features = torch.from_numpy(np.load(whisper_feat_path)).float()
+                    whisper_np = np.load(whisper_feat_path)
+                    if self.check_finite and not np.isfinite(whisper_np).all():
+                        print(
+                            f"[WARN] Non-finite Whisper features in {whisper_feat_path}; "
+                            "replacing with zeros"
+                        )
+                        whisper_np = np.nan_to_num(
+                            whisper_np, nan=0.0, posinf=0.0, neginf=0.0
+                        )
+                    whisper_features = torch.from_numpy(whisper_np).float()
                 except Exception as e:
                     print(f"[WARN] Failed to load Whisper features from {whisper_feat_path}: {e}")
 
         # Tokenize
-        tokens = [ord(c) for c in text if ord(c) < 5000]
+        tokens = [ord(c) for c in text if 0 < ord(c) < self.vocab_size]
         tokens = tokens if tokens else [1]
         tokens = torch.tensor(tokens, dtype=torch.long)
 
@@ -131,27 +180,31 @@ def collate_fn(batch: List[Dict]) -> Tuple[torch.Tensor, ...]:
 
     audio_features = torch.stack(padded_features)  # (B, T, n_mels)
 
-    # Handle pre-computed Whisper features (may have different time lengths)
-    whisper_features_list = []
-    for item in batch:
-        wf = item.get("whisper_features")
-        if wf is not None:
-            whisper_features_list.append(wf)
-        else:
-            # Create dummy tensor for padding alignment
-            # Whisper features are downsampled (T_features ≈ T_mel / 2)
-            expected_whisper_t = max_time // 2
-            whisper_features_list.append(torch.zeros(expected_whisper_t, 512))
+    # Handle pre-computed Whisper features. If the manifest has no feature paths
+    # at all, return None so the model can use the mel-only fallback.
+    has_whisper_features = any(item.get("whisper_features") is not None for item in batch)
+    if has_whisper_features:
+        whisper_dim = next(
+            item["whisper_features"].shape[1]
+            for item in batch
+            if item.get("whisper_features") is not None
+        )
+        whisper_features_list = []
+        for item in batch:
+            wf = item.get("whisper_features")
+            if wf is not None:
+                whisper_features_list.append(wf)
+            else:
+                expected_whisper_t = max(1, max_time // 2)
+                whisper_features_list.append(torch.zeros(expected_whisper_t, whisper_dim))
 
-    # Pad Whisper features to same length
-    if whisper_features_list and whisper_features_list[0] is not None:
         max_whisper_time = max(w.shape[0] for w in whisper_features_list)
         padded_whisper = []
         for w in whisper_features_list:
             if w.shape[0] < max_whisper_time:
                 w = torch.cat([w, torch.zeros(max_whisper_time - w.shape[0], w.shape[1])], dim=0)
             padded_whisper.append(w)
-        whisper_features = torch.stack(padded_whisper)  # (B, T_whisper, 512)
+        whisper_features = torch.stack(padded_whisper)  # (B, T_whisper, whisper_dim)
     else:
         whisper_features = None
 
@@ -187,7 +240,7 @@ def collate_fn(batch: List[Dict]) -> Tuple[torch.Tensor, ...]:
 
 # ==================== Metrics ====================
 
-def compute_edit_distance(pred: List[int], target: List[int]) -> int:
+def compute_edit_distance(pred: List, target: List) -> int:
     """Levenshtein distance dùng cho WER/PER."""
     m, n = len(pred), len(target)
     dp = list(range(n + 1))
@@ -202,20 +255,53 @@ def compute_edit_distance(pred: List[int], target: List[int]) -> int:
     return dp[n]
 
 
+def remove_blank_tokens(tokens: List[int], blank_id: int = BLANK_ID) -> List[int]:
+    """Remove CTC/RNN-T blank/pad tokens before metric computation."""
+    return [int(token) for token in tokens if int(token) != blank_id]
+
+
+def token_ids_to_text(tokens: List[int], blank_id: int = BLANK_ID) -> str:
+    """Convert character-code token IDs back to text for word-level WER."""
+    chars = []
+    for token in remove_blank_tokens(tokens, blank_id):
+        if 0 < token <= 0x10FFFF:
+            try:
+                chars.append(chr(token))
+            except ValueError:
+                continue
+    return "".join(chars)
+
+
 def compute_wer(predictions: List[List[int]], targets: List[List[int]]) -> float:
-    """Word Error Rate (%). Trả về giá trị 0–100."""
+    """Word Error Rate (%) computed on whitespace-tokenized decoded text."""
+    pred_words = [
+        token_ids_to_text(pred).strip().split()
+        for pred in predictions
+    ]
+    target_words = [
+        token_ids_to_text(target).strip().split()
+        for target in targets
+    ]
     total_errors = sum(
-        compute_edit_distance(p, t) for p, t in zip(predictions, targets)
+        compute_edit_distance(pred, target)
+        for pred, target in zip(pred_words, target_words)
     )
-    total_words = sum(len(t) for t in targets)
+    total_words = sum(len(target) for target in target_words)
     return (total_errors / total_words * 100.0) if total_words > 0 else 0.0
 
 
 def compute_per(
     phone_preds: List[List[int]], phone_targets: List[List[int]]
 ) -> float:
-    """Phone Error Rate (%). Dùng cùng edit distance với WER."""
-    return compute_wer(phone_preds, phone_targets)
+    """Phone/token Error Rate (%) over phone ID sequences."""
+    cleaned_preds = [remove_blank_tokens(pred) for pred in phone_preds]
+    cleaned_targets = [remove_blank_tokens(target) for target in phone_targets]
+    total_errors = sum(
+        compute_edit_distance(pred, target)
+        for pred, target in zip(cleaned_preds, cleaned_targets)
+    )
+    total_phones = sum(len(target) for target in cleaned_targets)
+    return (total_errors / total_phones * 100.0) if total_phones > 0 else 0.0
 
 
 def compute_gini_coefficient(expert_usage_counts: np.ndarray) -> float:
@@ -281,12 +367,12 @@ def greedy_decode_rnnt(logits: torch.Tensor, blank_id: int = BLANK_ID) -> List[i
         # Đơn giản: dùng bước cuối của U
         logits = logits[:, -1, :]  # (T, V)
 
-    decoded, prev = [], -1
+    decoded, prev = [], blank_id
     for t in range(logits.shape[0]):
         token = int(torch.argmax(logits[t]))
         if token != blank_id and token != prev:
             decoded.append(token)
-        prev = token if token != blank_id else prev
+        prev = token
     return decoded
 
 
@@ -313,6 +399,7 @@ def train_step(
     scaler: Optional[torch.cuda.amp.GradScaler],
     use_checkpoint: bool = False,
     gradient_accumulation_steps: int = 1,
+    check_finite: bool = False,
 ) -> Tuple[torch.Tensor, Dict, Dict]:
     """Một bước forward + loss. Không bao gồm optimizer.step().
 
@@ -345,6 +432,13 @@ def train_step(
     if whisper_features is not None:
         whisper_features = whisper_features.to(device, non_blocking=True)
 
+    if check_finite:
+        assert_finite_tensor("batch/audio_features", audio_features)
+        assert_finite_tensor("batch/targets", targets)
+        assert_finite_tensor("batch/input_lengths", input_lengths)
+        assert_finite_tensor("batch/target_lengths", target_lengths)
+        assert_finite_tensor("batch/whisper_features", whisper_features)
+
     amp_ctx = (
         torch.amp.autocast("cuda")
         if scaler is not None
@@ -364,10 +458,13 @@ def train_step(
         group_probs = aux_outputs.get("group_probs")
         group_ids = aux_outputs.get("group_ids")
         phone_logits = aux_outputs.get("phone_logits")
-        group_logits = (
-            torch.log(group_probs + 1e-8) if group_probs is not None else None
-        )
+        group_logits = aux_outputs.get("group_logits")
+        if group_logits is None and group_probs is not None:
+            group_logits = torch.log(group_probs + 1e-8)
         distillation_loss = torch.tensor(0.0, device=device)
+        base_model = getattr(model, "_orig_mod", model)
+        if hasattr(base_model, "reduce_lengths"):
+            input_lengths = base_model.reduce_lengths(input_lengths)
 
         total_loss, loss_dict = model.compute_loss(
             rnnt_logits=rnnt_logits,
@@ -383,8 +480,17 @@ def train_step(
             phone_lengths=phone_lengths,
         )
 
+    if check_finite:
+        assert_finite_tensor("model/rnnt_logits", rnnt_logits)
+        assert_finite_tensor("model/group_probs", group_probs)
+        assert_finite_tensor("model/group_logits", group_logits)
+        assert_finite_tensor("model/phone_logits", phone_logits)
+        for name, value in loss_dict.items():
+            assert_finite_tensor(f"loss/{name}", value)
+
     # Chia loss cho gradient accumulation (backward theo loss đã chia)
     scaled_loss = total_loss / gradient_accumulation_steps
+    assert_finite_tensor("loss/scaled_total", scaled_loss)
 
     if scaler is not None:
         scaler.scale(scaled_loss).backward()
@@ -433,6 +539,8 @@ def evaluate(
             audio_features = audio_features.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             phone_targets = phone_targets.to(device, non_blocking=True)
+            target_lengths = target_lengths.to(device, non_blocking=True)
+            phone_lengths = phone_lengths.to(device, non_blocking=True)
 
             # Move Whisper features to device if present
             if whisper_features is not None:
@@ -453,14 +561,16 @@ def evaluate(
             for i in range(B):
                 pred = greedy_decode_rnnt(rnnt_logits[i], BLANK_ID)
                 all_preds.append(pred)
-                all_targets.append(targets[i].cpu().tolist())
+                target_len = int(target_lengths[i].item())
+                all_targets.append(targets[i, :target_len].cpu().tolist())
 
                 if phone_logits is not None:
                     phone_pred = greedy_decode_rnnt(phone_logits[i], BLANK_ID)
                     all_phone_preds.append(phone_pred)
                 else:
                     all_phone_preds.append(pred)
-                all_phone_targets.append(phone_targets[i].cpu().tolist())
+                phone_len = int(phone_lengths[i].item())
+                all_phone_targets.append(phone_targets[i, :phone_len].cpu().tolist())
 
             try:
                 num_experts = (
@@ -653,6 +763,8 @@ def main():
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--train-manifest", type=str, default=None)
+    parser.add_argument("--valid-manifest", type=str, default=None)
     args = parser.parse_args()
 
     # --- Load config ---
@@ -662,6 +774,7 @@ def main():
     model_cfg = full_config["model"]
     train_cfg = full_config.get("training", {})
     data_cfg = full_config.get("data", {})
+    profiling_cfg = full_config.get("profiling", {})
 
     # CLI args ghi đè config
     output_dir = Path(args.output_dir or train_cfg.get("output_dir", "checkpoints"))
@@ -678,23 +791,54 @@ def main():
     competition_every = train_cfg.get("competition_every_n_steps", 0)
     wandb_project = args.wandb_project or train_cfg.get("wandb_project", "TeaMoE")
     wandb_entity = args.wandb_entity or train_cfg.get("wandb_entity", None)
+    check_finite = bool(
+        profiling_cfg.get("check_nan", False)
+        or profiling_cfg.get("check_inf", False)
+    )
+    param_check_interval = max(
+        1, int(profiling_cfg.get("param_check_interval", 1))
+    )
 
     device_str = args.device or train_cfg.get("device", None)
     if device_str is None:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_str)
 
+    # Manifest paths: CLI args override config
     manifests_dir = data_cfg.get(
         "manifests_dir",
         "datasets/processed_data_librispeech/manifests",
     )
-    train_manifest = os.path.join(
-        manifests_dir, data_cfg.get("train_manifest", "train.jsonl")
-    )
-    valid_manifest = os.path.join(
-        manifests_dir, data_cfg.get("valid_manifest", "validation.jsonl")
-    )
+
+    # Use CLI args if provided, otherwise use config
+    if args.train_manifest:
+        train_manifest = args.train_manifest
+    else:
+        train_manifest = os.path.join(
+            manifests_dir, data_cfg.get("train_manifest", "train.jsonl")
+        )
+
+    if args.valid_manifest:
+        valid_manifest = args.valid_manifest
+    else:
+        valid_manifest = os.path.join(
+            manifests_dir, data_cfg.get("valid_manifest", "validation.jsonl")
+        )
+
     num_workers = data_cfg.get("num_workers", 0)
+
+    missing_manifests = [
+        path for path in (train_manifest, valid_manifest)
+        if not os.path.exists(path)
+    ]
+    if missing_manifests:
+        missing_text = "\n  ".join(missing_manifests)
+        raise FileNotFoundError(
+            "Manifest file(s) not found:\n"
+            f"  {missing_text}\n"
+            "Create them first or pass existing paths with "
+            "--train-manifest and --valid-manifest."
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -702,6 +846,8 @@ def main():
     # This allows Dataset to access use_precomputed_whisper and whisper_feature_dir
     data_cfg["use_precomputed_whisper"] = model_cfg.get("use_precomputed_whisper", False)
     data_cfg["whisper_feature_dir"] = model_cfg.get("whisper_feature_dir", None)
+    data_cfg["vocab_size"] = model_cfg.get("vocab_size", 5000)
+    data_cfg["check_finite"] = check_finite
 
     # Lưu config để reproducibility
     with open(output_dir / "config.yaml", "w") as f:
@@ -729,8 +875,18 @@ def main():
             use_wandb = False
 
     # --- Dataset & DataLoader ---
-    pin_memory = device_str == "cuda"
-    persistent_workers = num_workers > 0
+    pin_memory = device.type == "cuda"
+    loader_kwargs = {
+        "num_workers": num_workers,
+        "collate_fn": collate_fn,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = data_cfg.get("persistent_workers", True)
+        loader_kwargs["prefetch_factor"] = data_cfg.get("prefetch_factor", 2)
+        if device.type == "cuda":
+            # Avoid forking DataLoader workers after CUDA is initialized.
+            loader_kwargs["multiprocessing_context"] = "spawn"
 
     train_dataset = LibriSpeechDataset(train_manifest, data_cfg, is_train=True)
     valid_dataset = LibriSpeechDataset(valid_manifest, data_cfg, is_train=False)
@@ -739,19 +895,13 @@ def main():
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
+        **loader_kwargs,
     )
     valid_loader = DataLoader(
         valid_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
+        **loader_kwargs,
     )
 
     # --- Model ---
@@ -766,8 +916,16 @@ def main():
         print("[WARN] torch.compile disabled (incompatible với gradient checkpointing)")
 
     # --- Optimizer & Scheduler ---
+    beta1 = float(train_cfg.get("beta1", 0.9))
+    beta2 = float(train_cfg.get("beta2", 0.999))
+    optimizer_eps = float(train_cfg.get("eps", 1e-8))
+    weight_decay = float(train_cfg.get("weight_decay", 0.01))
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=0.01
+        model.parameters(),
+        lr=learning_rate,
+        betas=(beta1, beta2),
+        eps=optimizer_eps,
+        weight_decay=weight_decay,
     )
 
     def lr_lambda(step: int) -> float:
@@ -782,8 +940,12 @@ def main():
 
     # Mixed precision scaler
     scaler = (
-        torch.amp.GradScaler("cuda")
-        if use_amp and device_str == "cuda"
+        torch.amp.GradScaler(
+            "cuda",
+            init_scale=float(train_cfg.get("amp_init_scale", 1024.0)),
+            growth_interval=int(train_cfg.get("amp_growth_interval", 2000)),
+        )
+        if use_amp and device.type == "cuda"
         else None
     )
 
@@ -816,6 +978,7 @@ def main():
     print(f"Epochs        : {num_epochs}")
     print(f"Batch size    : {batch_size}  (accum × {grad_accum_steps})")
     print(f"AMP           : {use_amp}  | Checkpoint : {use_checkpoint}")
+    print(f"Finite checks : {check_finite}")
     print(f"{'='*60}\n")
 
     # ==================== Training Loop ====================
@@ -838,6 +1001,7 @@ def main():
                 scaler=scaler,
                 use_checkpoint=use_checkpoint,
                 gradient_accumulation_steps=grad_accum_steps,
+                check_finite=check_finite,
             )
 
             accum_counter += 1
@@ -847,18 +1011,58 @@ def main():
                 if scaler is not None:
                     scaler.unscale_(optimizer)
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_grad_norm,
+                    error_if_nonfinite=False,
+                )
+                grad_norm_is_finite = bool(torch.isfinite(grad_norm.detach()).item())
+                if check_finite and not grad_norm_is_finite and scaler is None:
+                    raise FloatingPointError(
+                        f"Non-finite gradient at epoch={epoch+1}, "
+                        f"global_step={global_step}, lr={scheduler.get_last_lr()[0]:.3e}"
+                    )
 
+                optimizer_was_run = True
                 if scaler is not None:
-                    scaler.step(optimizer)
+                    scale_before_step = scaler.get_scale()
+                    if grad_norm_is_finite:
+                        scaler.step(optimizer)
                     scaler.update()
+                    optimizer_was_run = (
+                        grad_norm_is_finite
+                        and scaler.get_scale() >= scale_before_step
+                    )
+                    if check_finite and not optimizer_was_run:
+                        pbar.write(
+                            "[WARN] AMP skipped optimizer step "
+                            f"at global_step={global_step}; "
+                            f"grad_norm={float(grad_norm.detach().float().cpu()):.6g}, "
+                            f"scale {scale_before_step:.1f}->{scaler.get_scale():.1f}"
+                        )
                 else:
                     optimizer.step()
 
                 optimizer.zero_grad()
-                scheduler.step()
+                if optimizer_was_run:
+                    scheduler.step()
                 accum_counter = 0
                 global_step += 1
+
+                if (
+                    check_finite
+                    and optimizer_was_run
+                    and global_step % param_check_interval == 0
+                ):
+                    bad_param = find_first_nonfinite_parameter(model)
+                    if bad_param is not None:
+                        raise FloatingPointError(
+                            f"Non-finite parameter after optimizer step "
+                            f"at epoch={epoch+1}, global_step={global_step}, "
+                            f"lr={scheduler.get_last_lr()[0]:.3e}, "
+                            f"grad_norm={float(grad_norm.detach().float().cpu()):.6g}. "
+                            f"{bad_param}"
+                        )
 
                 # --- Ghi nhận loss ---
                 current_loss = (
@@ -866,6 +1070,11 @@ def main():
                     if isinstance(loss_dict, dict) and "total" in loss_dict
                     else total_loss.item()
                 )
+                if not math.isfinite(current_loss):
+                    raise FloatingPointError(
+                        f"Non-finite total loss at epoch={epoch+1}, "
+                        f"global_step={global_step}, lr={scheduler.get_last_lr()[0]:.3e}"
+                    )
                 epoch_loss += current_loss
                 epoch_steps += 1
                 current_lr = scheduler.get_last_lr()[0]
@@ -879,6 +1088,7 @@ def main():
                     log_dict = {
                         "train/loss": current_loss,
                         "train/lr": current_lr,
+                        "train/grad_norm": float(grad_norm.detach().float().cpu()),
                         "step": global_step,
                     }
                     if isinstance(loss_dict, dict):

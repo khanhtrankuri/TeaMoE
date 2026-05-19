@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Optional
 from .gating import GatingNetwork
 from .moe_conformer import MoEConformerEncoder
@@ -13,13 +14,16 @@ class TeaMoEModel(nn.Module):
         self.config = config
         self.use_whisper = config.get('use_whisper_features', False)
         self.use_precomputed_whisper = config.get('use_precomputed_whisper', False)
+        self.input_proj = nn.Linear(config['n_mels'], config['model_dim'])
+        self.whisper_dim = config.get('whisper_dim', 512)
+        self.time_reduction_factor = max(1, int(config.get('time_reduction_factor', 1)))
 
         # Initialize Whisper encoder only if NOT using precomputed features
         if self.use_whisper and not self.use_precomputed_whisper:
             from transformers import WhisperModel
             whisper_model_name = config.get('whisper_model_name', 'openai/whisper-base')
             self.whisper = WhisperModel.from_pretrained(whisper_model_name)
-            self.whisper_dim = getattr(self.whisper.config, 'd_model', 512)
+            self.whisper_dim = getattr(self.whisper.config, 'd_model', self.whisper_dim)
             self.whisper_freeze = config.get('whisper_freeze', True)
 
             # Freeze Whisper parameters if requested
@@ -35,16 +39,13 @@ class TeaMoEModel(nn.Module):
                 nn.Dropout(proj_dropout) if proj_dropout > 0 else nn.Identity()
             )
         elif self.use_precomputed_whisper:
-            # Pre-computed features path: mel + precomputed whisper (512 dim) -> model_dim
-            combined_input_dim = config['n_mels'] + 512
+            # Pre-computed features path: mel + precomputed whisper -> model_dim
+            combined_input_dim = config['n_mels'] + self.whisper_dim
             proj_dropout = config.get('whisper_proj_dropout', 0.1)
             self.combined_proj = nn.Sequential(
                 nn.Linear(combined_input_dim, config['model_dim']),
                 nn.Dropout(proj_dropout) if proj_dropout > 0 else nn.Identity()
             )
-        else:
-            # Standard input projection (mel only)
-            self.input_proj = nn.Linear(config['n_mels'], config['model_dim'])
 
         self.gating = GatingNetwork(
             num_groups=config['num_groups'],
@@ -52,6 +53,7 @@ class TeaMoEModel(nn.Module):
         )
         self.encoder = MoEConformerEncoder(config=config)
         self.decoder = RNNTDecoder(config=config)
+        self.ctc_phone_weight = config.get('ctc_phone_weight', 0.0)
         num_phones = config.get('num_phones', 256)
         self.phone_head = nn.Linear(config['model_dim'], num_phones)
         self.loss_fn = CombinedLoss(
@@ -62,41 +64,59 @@ class TeaMoEModel(nn.Module):
             blank_id=config['blank_id']
         )
 
-    def forward(self, audio_features, targets, phone_targets=None, deterministic=True,
-                use_checkpoint=False, whisper_features=None):
+    def reduce_lengths(self, lengths):
+        if self.time_reduction_factor <= 1:
+            return lengths
+        return torch.div(
+            lengths + self.time_reduction_factor - 1,
+            self.time_reduction_factor,
+            rounding_mode='floor',
+        )
+
+    def _reduce_time(self, x):
+        if self.time_reduction_factor <= 1:
+            return x
+        return F.avg_pool1d(
+            x.transpose(1, 2),
+            kernel_size=self.time_reduction_factor,
+            stride=self.time_reduction_factor,
+            ceil_mode=True,
+        ).transpose(1, 2)
+
+    def project_audio_features(self, audio_features, whisper_features=None):
         """
+        Project mel-only or mel+Whisper features into the encoder dimension.
+
         Args:
             audio_features: [B, T, n_mels] - mel spectrogram (time-first format)
-            targets: [B, U] - token ids
-            phone_targets: [B, U] - phone ids (optional)
-            deterministic: bool - routing mode
-            use_checkpoint: bool - gradient checkpointing
-            whisper_features: [B, T_w, 512] - pre-computed Whisper features (optional)
-
-        Returns:
-            rnnt_logits: [B, T, vocab_size + 1] by default
-            aux_outputs: dict with auxiliary outputs
+            whisper_features: [B, T_w, whisper_dim] - pre-computed Whisper features (optional)
         """
         if self.use_precomputed_whisper:
             # Use pre-computed Whisper features (loaded from disk)
             if whisper_features is None:
                 # Fallback to mel-only if no features provided
-                x = self.input_proj(audio_features)
-            else:
-                # Interpolate Whisper features to match mel time dimension
-                B, T, _ = audio_features.shape
-                T_w = whisper_features.shape[1]
-                if T_w != T:
-                    whisper_features = torch.nn.functional.interpolate(
-                        whisper_features.transpose(1, 2),  # [B, 512, T_w]
-                        size=T,
-                        mode='linear',
-                        align_corners=False
-                    ).transpose(1, 2)  # [B, T, 512]
+                return self.input_proj(audio_features)
 
-                # Concatenate mel and pre-computed whisper features
-                combined = torch.cat([audio_features, whisper_features], dim=-1)
-                x = self.combined_proj(combined)  # [B, T, model_dim]
+            if whisper_features.shape[-1] != self.whisper_dim:
+                raise ValueError(
+                    f"Expected Whisper feature dim {self.whisper_dim}, "
+                    f"got {whisper_features.shape[-1]}"
+                )
+
+            # Interpolate Whisper features to match mel time dimension
+            _, T, _ = audio_features.shape
+            T_w = whisper_features.shape[1]
+            if T_w != T:
+                whisper_features = torch.nn.functional.interpolate(
+                    whisper_features.transpose(1, 2),  # [B, whisper_dim, T_w]
+                    size=T,
+                    mode='linear',
+                    align_corners=False
+                ).transpose(1, 2)  # [B, T, whisper_dim]
+
+            # Concatenate mel and pre-computed whisper features
+            combined = torch.cat([audio_features, whisper_features], dim=-1)
+            return self.combined_proj(combined)  # [B, T, model_dim]
 
         elif self.use_whisper:
             # Compute Whisper features on-the-fly (original behavior)
@@ -129,13 +149,35 @@ class TeaMoEModel(nn.Module):
 
             # Concatenate mel and whisper features
             combined = torch.cat([audio_features, whisper_features], dim=-1)
-            x = self.combined_proj(combined)  # [B, T, model_dim]
-        else:
-            # Standard path: mel only
-            x = self.input_proj(audio_features)  # [B, T, model_dim]
+            return self.combined_proj(combined)  # [B, T, model_dim]
+
+        # Standard path: mel only
+        return self.input_proj(audio_features)  # [B, T, model_dim]
+
+    def forward(self, audio_features, targets, phone_targets=None, deterministic=True,
+                use_checkpoint=False, whisper_features=None):
+        """
+        Args:
+            audio_features: [B, T, n_mels] - mel spectrogram (time-first format)
+            targets: [B, U] - token ids
+            phone_targets: [B, U] - phone ids (optional)
+            deterministic: bool - routing mode
+            use_checkpoint: bool - gradient checkpointing
+            whisper_features: [B, T_w, whisper_dim] - pre-computed Whisper features (optional)
+
+        Returns:
+            rnnt_logits: [B, T, vocab_size + 1] by default
+            aux_outputs: dict with auxiliary outputs
+        """
+        x = self.project_audio_features(audio_features, whisper_features)
+        x = self._reduce_time(x)
 
         # Gating and encoder (unchanged)
-        group_probs, group_ids = self.gating(x, deterministic=deterministic)
+        group_probs, group_ids, group_logits = self.gating(
+            x,
+            deterministic=deterministic,
+            return_logits=True,
+        )
         encoder_out = self.encoder(
             x,
             group_ids=group_ids,
@@ -147,10 +189,15 @@ class TeaMoEModel(nn.Module):
             targets,
             deterministic=deterministic
         )
-        phone_logits = self.phone_head(encoder_out)
+        phone_logits = (
+            self.phone_head(encoder_out)
+            if self.ctc_phone_weight > 0
+            else None
+        )
         aux_outputs = {
             "group_probs": group_probs,
             "group_ids": group_ids,
+            "group_logits": group_logits,
             "encoder_out": encoder_out,
             "phone_logits": phone_logits,
         }

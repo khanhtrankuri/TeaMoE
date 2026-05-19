@@ -12,8 +12,10 @@ class GatingNetwork(nn.Module):
             nn.Linear(hidden_dim, num_groups),
         )
 
-    def forward(self, x, deterministic=True):
+    def forward(self, x, deterministic=True, return_logits=False):
         logits = self.net(x)
-        group_probs = torch.softmax(logits, dim=-1)
+        group_probs = torch.softmax(logits.float(), dim=-1)
         group_ids = torch.argmax(group_probs, dim=-1)
+        if return_logits:
+            return group_probs, group_ids, logits
         return group_probs, group_ids

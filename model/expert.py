@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import contextlib
 from typing import List, Optional
 
 
@@ -109,36 +110,48 @@ class ExpertGroup(nn.Module):
         if self.use_attention_pooling:
             # Attention-based combination
             N, E, D = stacked.shape
+            autocast_ctx = (
+                torch.amp.autocast(x.device.type, enabled=False)
+                if x.device.type in ("cuda", "cpu")
+                else contextlib.nullcontext()
+            )
 
-            # Compute query from input, key/value from expert outputs
-            q = self.query(x).view(N, self.attn_heads, self.head_dim)  # [N, H, h]
-            k = self.key(stacked).view(N, E, self.attn_heads, self.head_dim)
-            v = self.value(stacked).view(N, E, self.attn_heads, self.head_dim)
+            # Expert outputs can get large during warmup; keep the attention
+            # score path in FP32 so AMP matmul/softmax cannot overflow to NaN.
+            with autocast_ctx:
+                x_float = x.float()
+                stacked_float = stacked.float()
 
-            # Transpose for attention: [N, H, E, h]
-            k = k.transpose(1, 2)
-            v = v.transpose(1, 2)
+                # Compute query from input, key/value from expert outputs
+                q = self.query(x_float).view(N, self.attn_heads, self.head_dim)  # [N, H, h]
+                k = self.key(stacked_float).view(N, E, self.attn_heads, self.head_dim)
+                v = self.value(stacked_float).view(N, E, self.attn_heads, self.head_dim)
 
-            # Scaled dot-product attention
-            # q: [N, H, h] -> [N, H, 1, h]
-            # k: [N, H, E, h] -> [N, H, h, E]
-            scores = torch.matmul(q.unsqueeze(2), k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            # scores: [N, H, 1, E]
+                # Transpose for attention: [N, H, E, h]
+                k = k.transpose(1, 2)
+                v = v.transpose(1, 2)
 
-            attn_weights = F.softmax(scores, dim=-1)  # [N, H, 1, E]
-            attn_weights = self.attn_dropout(attn_weights)
+                # Scaled dot-product attention
+                # q: [N, H, h] -> [N, H, 1, h]
+                # k: [N, H, E, h] -> [N, H, h, E]
+                scores = torch.matmul(q.unsqueeze(2), k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+                # scores: [N, H, 1, E]
 
-            # Weighted sum of values
-            # attn_weights: [N, H, 1, E] @ v: [N, H, E, h] -> [N, H, 1, h]
-            context = torch.matmul(attn_weights, v)  # [N, H, 1, h]
-            context = context.squeeze(2)  # [N, H, h]
+                attn_weights = F.softmax(scores, dim=-1)  # [N, H, 1, E]
+                attn_weights = self.attn_dropout(attn_weights)
 
-            # Concatenate heads
-            context = context.view(N, D)  # [N, D]
+                # Weighted sum of values
+                # attn_weights: [N, H, 1, E] @ v: [N, H, E, h] -> [N, H, 1, h]
+                context = torch.matmul(attn_weights, v)  # [N, H, 1, h]
+                context = context.squeeze(2)  # [N, H, h]
 
-            # Output projection
-            combined = self.out_proj(context)
-            combined = self.norm(combined + x)  # Pre-norm style residual
+                # Concatenate heads
+                context = context.reshape(N, D)  # [N, D]
+
+                # Output projection
+                combined = self.out_proj(context)
+                combined = self.norm(combined + x_float)  # Pre-norm style residual
+            combined = combined.to(dtype=x.dtype)
         else:
             # Simple mean pooling (default)
             combined = stacked.mean(dim=1)

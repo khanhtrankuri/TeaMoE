@@ -9,7 +9,7 @@
 model:
   # -------------------- Encoder Backbone --------------------
   # Giảm kích thước model để training nhanh hơn
-  num_layers: 12                 # 24 → 12 (giảm 50% thời gian encoder)
+  num_layers: 16                 # 24 → 12 (giảm 50% thời gian encoder)
   moe_start_layer: 4            # 6 → 4 (bắt đầu MoE sớm hơn)
   moe_end_layer: 10             # 18 → 10 (kết thúc MoE sớm hơn)
   model_dim: 512                # 1024 → 512 (giảm 75% computation)
@@ -25,7 +25,23 @@ model:
   top_k_inference: 1
 
   # -------------------- Shared Pretrained Experts --------------------
-  group_expert_pretrained_paths: null
+  group_expert_pretrained_paths:
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
+    - ["./checkpoints/pretrained/expert_0.pt",
+       "./checkpoints/pretrained/expert_1.pt",
+       "./checkpoints/pretrained/expert_2.pt",
+       "./checkpoints/pretrained/expert_3.pt"]
 
   # -------------------- Expert Pooling Strategy --------------------
   use_attention_pooling: false  # Mean pooling nhanh hơn 10-20%
@@ -62,7 +78,7 @@ model:
       specialization: "other"
 
   # -------------------- Decoder (RNNT) --------------------
-  vocab_size: 1000              # Smaller vocab
+  vocab_size: 5000              # Smaller vocab
   decoder_hidden: 512
   decoder_layers: 2
   blank_id: 0

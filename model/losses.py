@@ -3,6 +3,21 @@ import torch.nn.functional as F
 from typing import Tuple
 
 
+def _assert_finite(name: str, tensor: torch.Tensor) -> None:
+    if not torch.isfinite(tensor.detach()).all():
+        value = tensor.detach().float()
+        finite = value[torch.isfinite(value)]
+        if finite.numel() > 0:
+            stats = (
+                f"finite_min={finite.min().item():.6g}, "
+                f"finite_max={finite.max().item():.6g}, "
+                f"finite_mean={finite.mean().item():.6g}"
+            )
+        else:
+            stats = "no finite values"
+        raise FloatingPointError(f"Non-finite {name}: {stats}")
+
+
 class CombinedLoss:
     """Combined loss for MoE-Conformer + RNN-T"""
 
@@ -69,7 +84,7 @@ class CombinedLoss:
         group_probs: (batch, time, num_groups) - probabilities from gating network
         """
         num_groups = group_probs.shape[-1]
-        group_usage = torch.mean(F.one_hot(group_ids, num_classes=num_groups).float(), dim=[0, 1])
+        group_usage = torch.mean(group_probs.float(), dim=[0, 1])
         target_usage = 1.0 / num_groups
         loss = torch.sum((group_usage - target_usage) ** 2)
         return loss * self.load_balance_weight
@@ -82,7 +97,7 @@ class CombinedLoss:
         Router z-loss to reduce overconfidence
         group_logits: (batch, time, num_groups)
         """
-        log_z = torch.logsumexp(group_logits, dim=-1)
+        log_z = torch.logsumexp(group_logits.float(), dim=-1)
         loss = torch.mean(log_z ** 2)
         return loss * self.z_loss_weight
 
@@ -113,6 +128,9 @@ class CombinedLoss:
         phone_logits: (batch, time, num_phones)
         phone_targets: (batch, target_len) - not used correctly here, placeholder
         """
+        if self.ctc_phone_weight <= 0:
+            return phone_logits.new_zeros(())
+
         # Placeholder: use cross_entropy only on valid positions
         num_phones = phone_logits.shape[-1]
         b, t, _ = phone_logits.shape
@@ -142,15 +160,18 @@ class CombinedLoss:
 
         losses['rnnt'] = self.rnnt_loss(rnnt_logits, targets, input_lengths, target_lengths)
         losses['load_balance'] = self.load_balance_loss(group_probs, group_ids)
-        losses['z_loss'] = self.z_loss(group_logits)
-        losses['distillation'] = distillation_loss
+        if group_logits is not None:
+            losses['z_loss'] = self.z_loss(group_logits)
+        else:
+            losses['z_loss'] = rnnt_logits.new_zeros(())
+        losses['distillation'] = distillation_loss.to(rnnt_logits.device)
 
         if phone_logits is not None and phone_targets is not None:
             losses['ctc_phone'] = self.ctc_phone_loss(
                 phone_logits, phone_targets, input_lengths, phone_lengths
             )
         else:
-            losses['ctc_phone'] = torch.tensor(0.0)
+            losses['ctc_phone'] = rnnt_logits.new_zeros(())
 
         total = (
             losses['rnnt'] +
@@ -160,5 +181,7 @@ class CombinedLoss:
             losses['ctc_phone']
         )
         losses['total'] = total
+        for name, value in losses.items():
+            _assert_finite(f"loss/{name}", value)
 
         return total, losses
